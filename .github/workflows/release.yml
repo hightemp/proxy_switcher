@@ -31,7 +31,7 @@ jobs:
 
       - name: Rename APK for release
         run: |
-          mv ${{ env.APP_MODULE }}/build/outputs/apk/release/${{ env.APP_MODULE }}-release.apk ${{ env.APP_MODULE }}/build/outputs/apk/release/proxy_switcher-release.apk
+          mv ${{ env.APP_MODULE }}/build/outputs/apk/release/${{ env.APP_MODULE }}-release-unsigned.apk ${{ env.APP_MODULE }}/build/outputs/apk/release/proxy_switcher-release.apk
 
       - name: Upload built APK as artifact
         uses: actions/upload-artifact@v4
