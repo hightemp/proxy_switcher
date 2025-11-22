@@ -12,7 +12,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       APP_MODULE: app
-      APK_OUTPUT_PATH: ${{ env.APP_MODULE }}/build/outputs/apk/release/${{ env.APP_MODULE }}-release.apk
 
     steps:
       - name: Checkout code
@@ -24,22 +23,21 @@ jobs:
           distribution: temurin
           java-version: '11'
 
-      - name: Grant execute permission for Gradle wrapper
+      - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
       - name: Build Release APK
-        run: ./gradlew clean ${APP_MODULE}:assembleRelease
+        run: ./gradlew clean ${{ env.APP_MODULE }}:assembleRelease
 
-      # Если у вас нет keystore-подписи, этот шаг можно пропустить или активировать позже
-      # - name: Sign APK
-      #   run: |
-      #     echo "Signing step placeholder – add keystore and signing config when ready"
+      - name: Rename APK for release
+        run: |
+          mv ${{ env.APP_MODULE }}/build/outputs/apk/release/${{ env.APP_MODULE }}-release.apk ${{ env.APP_MODULE }}/build/outputs/apk/release/proxy_switcher-release.apk
 
       - name: Upload built APK as artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-apk
-          path: ${{ env.APK_OUTPUT_PATH }}
+          path: ${{ env.APP_MODULE }}/build/outputs/apk/release/proxy_switcher-release.apk
 
       - name: Create GitHub Release
         id: create_release
@@ -48,15 +46,17 @@ jobs:
           tag_name: ${{ github.ref_name }}
           release_name: Release ${{ github.ref_name }}
           body: |
-            Release for tag ${{ github.ref_name }}  
-            (Build committed at ${{ github.sha }})
+            Release for tag ${{ github.ref_name }}
+            (Build commit: ${{ github.sha }})
           draft: false
           prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload APK to Release
         uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ${{ env.APK_OUTPUT_PATH }}
-          asset_name: ${{ env.APP_MODULE }}-release-${{ github.ref_name }}.apk
+          asset_path: ${{ env.APP_MODULE }}/build/outputs/apk/release/proxy_switcher-release.apk
+          asset_name: proxy_switcher-${{ github.ref_name }}.apk
           asset_content_type: application/vnd.android.package-archive
