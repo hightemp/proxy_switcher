@@ -1,0 +1,62 @@
+name: Android Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    env:
+      APP_MODULE: app
+      APK_OUTPUT_PATH: ${{ env.APP_MODULE }}/build/outputs/apk/release/${{ env.APP_MODULE }}-release.apk
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v3
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Grant execute permission for Gradle wrapper
+        run: chmod +x ./gradlew
+
+      - name: Build Release APK
+        run: ./gradlew clean ${APP_MODULE}:assembleRelease
+
+      # Если у вас нет keystore-подписи, этот шаг можно пропустить или активировать позже
+      # - name: Sign APK
+      #   run: |
+      #     echo "Signing step placeholder – add keystore and signing config when ready"
+
+      - name: Upload built APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk
+          path: ${{ env.APK_OUTPUT_PATH }}
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ github.ref_name }}
+          body: |
+            Release for tag ${{ github.ref_name }}  
+            (Build committed at ${{ github.sha }})
+          draft: false
+          prerelease: false
+
+      - name: Upload APK to Release
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ env.APK_OUTPUT_PATH }}
+          asset_name: ${{ env.APP_MODULE }}-release-${{ github.ref_name }}.apk
+          asset_content_type: application/vnd.android.package-archive
