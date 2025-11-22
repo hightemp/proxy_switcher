@@ -47,3 +47,11 @@ Alternatively, use Gradle:
     *   Save settings.
 
 Now all your HTTP/HTTPS traffic will be routed through the selected upstream proxy.
+
+## Screenshots
+
+![](screenshots/photo_2025-11-22_10-17-00.jpg)
+![](screenshots/photo_2025-11-22_10-17-08.jpg)
+![](screenshots/photo_2025-11-22_10-17-13.jpg)
+![](screenshots/photo_2025-11-22_10-17-18.jpg)
+![](screenshots/photo_2025-11-22_10-17-22.jpg)
