@@ -50,8 +50,4 @@ Now all your HTTP/HTTPS traffic will be routed through the selected upstream pro
 
 ## Screenshots
 
-![](screenshots/photo_2025-11-22_10-17-00.jpg)
-![](screenshots/photo_2025-11-22_10-17-08.jpg)
-![](screenshots/photo_2025-11-22_10-17-13.jpg)
-![](screenshots/photo_2025-11-22_10-17-18.jpg)
-![](screenshots/photo_2025-11-22_10-17-22.jpg)
+<img src="screenshots/photo_2025-11-22_10-17-00.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-08.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-13.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-18.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-22.jpg" width="19%" />
