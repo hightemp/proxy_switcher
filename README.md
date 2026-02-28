@@ -1,6 +1,10 @@
 # Proxy Switcher
 
-![Version](https://img.shields.io/badge/version-1.0.2-blue)
+<p align="center">
+  <img src="proxy_switcher_logox768.png" width="100" />
+</p>
+
+![Version](https://img.shields.io/badge/version-1.0.3-blue)
 ![Status](https://img.shields.io/badge/status-experimental-orange)
 ![Vibe Coded](https://img.shields.io/badge/vibe-coded-blueviolet)
 
