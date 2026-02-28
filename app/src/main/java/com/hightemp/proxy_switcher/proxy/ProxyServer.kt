@@ -8,6 +8,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.net.*
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.net.ssl.SSLSocketFactory
 
 class ProxyServer {
 
@@ -135,8 +136,18 @@ class ProxyServer {
             val bytesToWrite: Int
 
             if (proxy != null && (proxy.type == ProxyType.HTTP || proxy.type == ProxyType.HTTPS)) {
-                // HTTP Proxy: Connect directly and send modified request (with Proxy-Auth)
-                upstreamSocket = Socket(proxy.host, proxy.port)
+                // Connect to proxy; use TLS for HTTPS-type proxy
+                val tcpSocket = Socket(Proxy.NO_PROXY)
+                tcpSocket.connect(InetSocketAddress(proxy.host, proxy.port), 15000)
+                upstreamSocket = if (proxy.type == ProxyType.HTTPS) {
+                    AppLogger.log("ProxyServer", "Upgrading to TLS for HTTPS proxy ${proxy.host}:${proxy.port}")
+                    val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory)
+                        .createSocket(tcpSocket, proxy.host, proxy.port, true) as javax.net.ssl.SSLSocket
+                    ssl.startHandshake()
+                    ssl
+                } else {
+                    tcpSocket
+                }
                 
                 if (!proxy.username.isNullOrBlank()) {
                     // Inject header
@@ -185,9 +196,20 @@ class ProxyServer {
 
         AppLogger.log("ProxyServer", "Connecting to upstream proxy ${proxy.host}:${proxy.port} (${proxy.type})")
         // IMPORTANT: Use Proxy.NO_PROXY to connect to the upstream proxy server itself
-        val socket = Socket(Proxy.NO_PROXY)
-        socket.connect(InetSocketAddress(proxy.host, proxy.port), 15000)
-        socket.soTimeout = 15000 // 15s timeout
+        val tcpSocket = Socket(Proxy.NO_PROXY)
+        tcpSocket.connect(InetSocketAddress(proxy.host, proxy.port), 15000)
+        tcpSocket.soTimeout = 15000 // 15s timeout
+
+        // For HTTPS-type proxy, wrap the TCP socket in TLS before sending any proxy protocol
+        val socket: Socket = if (proxy.type == ProxyType.HTTPS) {
+            AppLogger.log("ProxyServer", "Upgrading to TLS for HTTPS proxy ${proxy.host}:${proxy.port}")
+            val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory)
+                .createSocket(tcpSocket, proxy.host, proxy.port, true) as javax.net.ssl.SSLSocket
+            ssl.startHandshake()
+            ssl
+        } else {
+            tcpSocket
+        }
 
         when (proxy.type) {
             ProxyType.HTTP, ProxyType.HTTPS -> {
