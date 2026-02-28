@@ -26,8 +26,8 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     val proxyList by viewModel.proxyList.collectAsState()
-    var isRunning by remember { mutableStateOf(false) } // In a real app, observe Service state
-    var selectedProxy by remember { mutableStateOf<ProxyEntity?>(null) }
+    val isRunning by viewModel.isProxyRunning.collectAsState()
+    val selectedProxy by viewModel.selectedProxy.collectAsState()
     var expanded by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -85,7 +85,7 @@ fun HomeScreen(
                     DropdownMenuItem(
                         text = { Text("Direct Connection") },
                         onClick = {
-                            selectedProxy = null
+                            viewModel.setSelectedProxy(null)
                             expanded = false
                         }
                     )
@@ -93,7 +93,7 @@ fun HomeScreen(
                         DropdownMenuItem(
                             text = { Text("${proxy.label ?: proxy.host} (${proxy.type})") },
                             onClick = {
-                                selectedProxy = proxy
+                                viewModel.setSelectedProxy(proxy)
                                 expanded = false
                             }
                         )
@@ -110,7 +110,7 @@ fun HomeScreen(
                             action = ProxyService.ACTION_STOP
                         }
                         context.startService(intent)
-                        isRunning = false
+                        viewModel.setProxyRunning(false)
                     } else {
                         val intent = Intent(context, ProxyService::class.java).apply {
                             action = ProxyService.ACTION_START
@@ -119,7 +119,7 @@ fun HomeScreen(
                             }
                         }
                         context.startForegroundService(intent)
-                        isRunning = true
+                        viewModel.setProxyRunning(true)
                     }
                 },
                 modifier = Modifier

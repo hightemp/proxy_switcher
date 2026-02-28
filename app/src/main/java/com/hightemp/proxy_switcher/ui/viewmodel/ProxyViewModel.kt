@@ -5,8 +5,10 @@ import androidx.lifecycle.viewModelScope
 import com.hightemp.proxy_switcher.data.local.ProxyEntity
 import com.hightemp.proxy_switcher.data.repository.ProxyRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -15,6 +17,20 @@ import javax.inject.Inject
 class ProxyViewModel @Inject constructor(
     private val repository: ProxyRepository
 ) : ViewModel() {
+
+    private val _isProxyRunning = MutableStateFlow(false)
+    val isProxyRunning: StateFlow<Boolean> = _isProxyRunning.asStateFlow()
+
+    fun setProxyRunning(running: Boolean) {
+        _isProxyRunning.value = running
+    }
+
+    private val _selectedProxy = MutableStateFlow<ProxyEntity?>(null)
+    val selectedProxy: StateFlow<ProxyEntity?> = _selectedProxy.asStateFlow()
+
+    fun setSelectedProxy(proxy: ProxyEntity?) {
+        _selectedProxy.value = proxy
+    }
 
     val proxyList: StateFlow<List<ProxyEntity>> = repository.getAllProxies()
         .stateIn(
