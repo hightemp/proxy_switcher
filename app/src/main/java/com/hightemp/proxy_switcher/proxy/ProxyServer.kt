@@ -12,6 +12,17 @@ import javax.net.ssl.SSLSocketFactory
 
 class ProxyServer {
 
+    companion object {
+        // 64 KB tunnel buffer — good balance between RAM and throughput on mobile
+        private const val TUNNEL_BUF = 65536
+        // 16 KB for the initial HTTP request read — enough for any real-world header set
+        private const val REQUEST_BUF = 16384
+        // TCP socket buffer hint — increases kernel ring buffer for burst traffic
+        private const val SOCK_BUF = 262144 // 256 KB
+        // Accept backlog — allow many pending connections before the OS drops them
+        private const val BACKLOG = 256
+    }
+
     private var serverSocket: ServerSocket? = null
     private val isRunning = AtomicBoolean(false)
     private var upstreamProxy: ProxyEntity? = null
@@ -24,7 +35,7 @@ class ProxyServer {
 
         scope.launch {
             try {
-                serverSocket = ServerSocket(port)
+                serverSocket = ServerSocket(port, BACKLOG)
                 AppLogger.log("ProxyServer", "Server started on port $port. Upstream: ${proxy?.host}:${proxy?.port} (${proxy?.type})")
 
                 while (isRunning.get()) {
@@ -54,10 +65,15 @@ class ProxyServer {
 
     private fun handleClient(clientSocket: Socket) {
         try {
+            // Disable Nagle — prevents 40-200ms delays for interactive/multiplexed traffic
+            clientSocket.tcpNoDelay = true
+            clientSocket.setReceiveBufferSize(SOCK_BUF)
+            clientSocket.setSendBufferSize(SOCK_BUF)
+
             val input = clientSocket.getInputStream()
-            
+
             // Read the initial request line to determine the target
-            val buffer = ByteArray(8192)
+            val buffer = ByteArray(REQUEST_BUF)
             val bytesRead = input.read(buffer)
             if (bytesRead == -1) {
                 clientSocket.close()
@@ -76,8 +92,6 @@ class ProxyServer {
             val method = parts[0]
             val url = parts[1]
 
-            AppLogger.log("ProxyServer", "Request: $method $url")
-
             if (method == "CONNECT") {
                 handleHttpsConnect(clientSocket, url, upstreamProxy)
             } else {
@@ -95,12 +109,9 @@ class ProxyServer {
         val targetHost = hostPort[0]
         val targetPort = if (hostPort.size > 1) hostPort[1].toInt() else 443
 
-        AppLogger.log("ProxyServer", "Handling CONNECT to $targetHost:$targetPort via ${proxy?.host}")
-
         try {
             val upstreamSocket = connectToUpstream(targetHost, targetPort, proxy)
-            AppLogger.log("ProxyServer", "Connected to upstream for $targetHost:$targetPort")
-            
+
             // Send 200 Connection Established to client
             clientSocket.getOutputStream().write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
             clientSocket.getOutputStream().flush()
@@ -139,8 +150,8 @@ class ProxyServer {
                 // Connect to proxy; use TLS for HTTPS-type proxy
                 val tcpSocket = Socket(Proxy.NO_PROXY)
                 tcpSocket.connect(InetSocketAddress(proxy.host, proxy.port), 15000)
+                applySocketPerf(tcpSocket)
                 upstreamSocket = if (proxy.type == ProxyType.HTTPS) {
-                    AppLogger.log("ProxyServer", "Upgrading to TLS for HTTPS proxy ${proxy.host}:${proxy.port}")
                     val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                         .createSocket(tcpSocket, proxy.host, proxy.port, true) as javax.net.ssl.SSLSocket
                     ssl.startHandshake()
@@ -175,8 +186,7 @@ class ProxyServer {
             }
 
             upstreamSocket.getOutputStream().write(bufferToWrite, 0, bytesToWrite)
-            upstreamSocket.getOutputStream().flush()
-            
+
             tunnel(clientSocket, upstreamSocket)
 
         } catch (e: Exception) {
@@ -185,24 +195,31 @@ class ProxyServer {
         }
     }
 
+    private fun applySocketPerf(socket: Socket) {
+        socket.tcpNoDelay = true
+        socket.setReceiveBufferSize(SOCK_BUF)
+        socket.setSendBufferSize(SOCK_BUF)
+        // Hint: favour bandwidth over latency/connection-time (0 = don't care, higher = more important)
+        socket.setPerformancePreferences(0, 0, 2)
+    }
+
     private fun connectToUpstream(targetHost: String, targetPort: Int, proxy: ProxyEntity?): Socket {
         if (proxy == null) {
-            AppLogger.log("ProxyServer", "Connecting directly to $targetHost:$targetPort")
             // IMPORTANT: Use Proxy.NO_PROXY to bypass system proxy settings (avoid recursion)
             val socket = Socket(Proxy.NO_PROXY)
             socket.connect(InetSocketAddress(targetHost, targetPort), 15000)
+            applySocketPerf(socket)
             return socket
         }
 
-        AppLogger.log("ProxyServer", "Connecting to upstream proxy ${proxy.host}:${proxy.port} (${proxy.type})")
         // IMPORTANT: Use Proxy.NO_PROXY to connect to the upstream proxy server itself
         val tcpSocket = Socket(Proxy.NO_PROXY)
         tcpSocket.connect(InetSocketAddress(proxy.host, proxy.port), 15000)
-        tcpSocket.soTimeout = 15000 // 15s timeout
+        tcpSocket.soTimeout = 15000 // 15s timeout for handshake only
+        applySocketPerf(tcpSocket)
 
         // For HTTPS-type proxy, wrap the TCP socket in TLS before sending any proxy protocol
         val socket: Socket = if (proxy.type == ProxyType.HTTPS) {
-            AppLogger.log("ProxyServer", "Upgrading to TLS for HTTPS proxy ${proxy.host}:${proxy.port}")
             val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                 .createSocket(tcpSocket, proxy.host, proxy.port, true) as javax.net.ssl.SSLSocket
             ssl.startHandshake()
@@ -213,7 +230,6 @@ class ProxyServer {
 
         when (proxy.type) {
             ProxyType.HTTP, ProxyType.HTTPS -> {
-                AppLogger.log("ProxyServer", "Sending CONNECT request to upstream HTTP proxy")
                 // For HTTPS target (CONNECT method), we need to tell HTTP proxy to CONNECT to target
                 val connectReq = StringBuilder()
                 connectReq.append("CONNECT $targetHost:$targetPort HTTP/1.1\r\n")
@@ -222,7 +238,6 @@ class ProxyServer {
                     val auth = "${proxy.username}:${proxy.password}"
                     val encoded = android.util.Base64.encodeToString(auth.toByteArray(), android.util.Base64.NO_WRAP)
                     connectReq.append("Proxy-Authorization: Basic $encoded\r\n")
-                    AppLogger.log("ProxyServer", "Added Proxy-Authorization header")
                 }
                 connectReq.append("\r\n")
                 
@@ -233,7 +248,6 @@ class ProxyServer {
                 val inp = socket.getInputStream()
                 // Read response (HTTP/1.1 200 ...)
                 val responseLine = readLine(inp)
-                AppLogger.log("ProxyServer", "Upstream response: $responseLine")
                 
                 if (!responseLine.contains("200")) {
                     throw IOException("Proxy CONNECT failed. Response: $responseLine")
@@ -249,7 +263,8 @@ class ProxyServer {
                 return socket
             }
             ProxyType.SOCKS5 -> {
-                val inp = socket.getInputStream()
+                // Use buffered streams so SOCKS5 handshake byte reads are not individual syscalls
+                val inp = socket.getInputStream().buffered(4096)
                 val out = socket.getOutputStream()
                 
                 // 1. Auth negotiation
@@ -330,47 +345,50 @@ class ProxyServer {
     }
 
     private fun readNBytes(inp: InputStream, n: Int) {
-        for (i in 0 until n) {
-            inp.read()
+        var remaining = n
+        val buf = ByteArray(n)
+        while (remaining > 0) {
+            val read = inp.read(buf, n - remaining, remaining)
+            if (read == -1) break
+            remaining -= read
         }
     }
 
+    /**
+     * Bidirectional tunnel between [client] and [server].
+     * Each direction runs in its own coroutine on Dispatchers.IO.
+     * No flush() in the hot path — SocketOutputStream writes go directly to the kernel TCP buffer.
+     */
     private fun tunnel(client: Socket, server: Socket) {
-        // 32 KB buffer — 8x faster than 4 KB for video/photo data
-        val bufSize = 32768
         scope.launch {
             try {
-                val clientIn = client.getInputStream()
-                val serverOut = server.getOutputStream()
-                val buffer = ByteArray(bufSize)
-                var read: Int
-                while (clientIn.read(buffer).also { read = it } != -1) {
-                    serverOut.write(buffer, 0, read)
-                    serverOut.flush()
+                val src = client.getInputStream()
+                val dst = server.getOutputStream()
+                val buf = ByteArray(TUNNEL_BUF)
+                var n: Int
+                while (src.read(buf).also { n = it } != -1) {
+                    dst.write(buf, 0, n)
                 }
-            } catch (e: Exception) {
-                // Ignore
+            } catch (_: Exception) {
             } finally {
-                try { client.close() } catch (e: Exception) {}
-                try { server.close() } catch (e: Exception) {}
+                try { client.shutdownOutput() } catch (_: Exception) {}
+                try { server.close() } catch (_: Exception) {}
             }
         }
 
         scope.launch {
             try {
-                val serverIn = server.getInputStream()
-                val clientOut = client.getOutputStream()
-                val buffer = ByteArray(bufSize)
-                var read: Int
-                while (serverIn.read(buffer).also { read = it } != -1) {
-                    clientOut.write(buffer, 0, read)
-                    clientOut.flush()
+                val src = server.getInputStream()
+                val dst = client.getOutputStream()
+                val buf = ByteArray(TUNNEL_BUF)
+                var n: Int
+                while (src.read(buf).also { n = it } != -1) {
+                    dst.write(buf, 0, n)
                 }
-            } catch (e: Exception) {
-                // Ignore
+            } catch (_: Exception) {
             } finally {
-                try { client.close() } catch (e: Exception) {}
-                try { server.close() } catch (e: Exception) {}
+                try { server.shutdownOutput() } catch (_: Exception) {}
+                try { client.close() } catch (_: Exception) {}
             }
         }
     }
