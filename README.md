@@ -1,5 +1,8 @@
 # Proxy Switcher
 
+![Experimental](https://img.shields.io/badge/status-experimental-orange)
+![Vibe Coded](https://img.shields.io/badge/vibe-coded-blueviolet)
+
 A simple and efficient Android application that runs a local HTTP proxy server on your device, allowing you to route your traffic through various upstream proxies (HTTP, HTTPS, SOCKS5).
 
 ## 🚀 Features
@@ -67,18 +70,37 @@ Now all your HTTP/HTTPS traffic will be routed through the selected upstream pro
 ### Check current system proxy
 ```bash
 adb shell settings get global http_proxy
+# or use the convenience target:
+make adb-check-proxy
 ```
 Returns `127.0.0.1:8080` while the proxy is running, or the previous value / `null` after it stops.
 
 ### Reset system proxy manually
-If the app was killed unexpectedly and the proxy setting was not restored, clear it with:
+If the app was killed unexpectedly and the proxy setting was not restored, clear both proxy key families:
 ```bash
+make adb-clear-proxy
+# or manually:
 adb shell settings delete global http_proxy
+adb shell settings delete global global_http_proxy_host
+adb shell settings delete global global_http_proxy_port
+adb shell settings delete global global_http_proxy_exclusion_list
+adb shell settings delete global global_proxy_pac_url
 ```
-Or set it back to a specific value:
-```bash
-adb shell settings put global http_proxy <host>:<port>
-```
+> Android uses several proxy key families: `http_proxy` (legacy), `global_http_proxy_*` (used by Chrome and the system), and `global_proxy_pac_url` (PAC auto-config). All must be cleared.
+
+### Per-network WiFi proxy (separate from Settings.Global)
+
+Chrome and the Android network stack read the proxy from **LinkProperties** of the active network, not just from `Settings.Global`. If you previously set the WiFi proxy manually (Settings → WiFi → Modify → Proxy → Manual), that per-network proxy persists independently.
+
+**Symptom**: `adb shell settings list global | grep proxy` returns nothing, but Chrome still shows `ERR_PROXY_CONNECTION_FAILED`.
+
+**Diagnosis**: `make adb-check-proxy` — look for `HTTP proxy: [127.0.0.1] 8080` in the WiFi dump.
+
+**Fix options**:
+1. Open the **System Proxy** screen in the app (NetworkCheck icon in HomeScreen) — it shows both `Settings.Global` and the active `LinkProperties` proxy. If the per-network proxy is stale, an "Open WiFi Settings" button appears.
+2. Manually: **Settings → WiFi → long-press active network → Modify Network → Advanced → Proxy → None → Save**
+
+> The app attempts to clear the per-network proxy via `WifiManager.updateNetwork()` on proxy stop. This works on Android < 10; on Android 10+ it silently fails due to system restrictions.
 
 ### View proxy logs in real time
 ```bash

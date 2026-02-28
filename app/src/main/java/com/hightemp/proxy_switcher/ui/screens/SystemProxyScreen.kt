@@ -1,6 +1,8 @@
 package com.hightemp.proxy_switcher.ui.screens
 
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
 import android.provider.Settings
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -26,10 +28,28 @@ fun SystemProxyScreen(navController: NavController) {
                 PackageManager.PERMISSION_GRANTED
     }
 
-    fun readCurrentProxy(): String =
-        Settings.Global.getString(context.contentResolver, Settings.Global.HTTP_PROXY) ?: ""
+    fun readCurrentProxy(): String {
+        val globalHost = Settings.Global.getString(context.contentResolver, "global_http_proxy_host") ?: ""
+        val globalPort = Settings.Global.getString(context.contentResolver, "global_http_proxy_port") ?: ""
+        if (globalHost.isNotEmpty()) return "$globalHost:$globalPort"
+        return Settings.Global.getString(context.contentResolver, Settings.Global.HTTP_PROXY) ?: ""
+    }
+
+    // Read the ACTUAL proxy applied to the active network (what Chrome uses)
+    fun readLinkProxy(): String {
+        return try {
+            val cm = context.getSystemService(ConnectivityManager::class.java)
+            val network = cm.activeNetwork ?: return ""
+            val lp = cm.getLinkProperties(network) ?: return ""
+            val proxy = lp.httpProxy ?: return ""
+            val h = proxy.host ?: ""
+            val p = proxy.port
+            if (h.isEmpty()) "" else "$h:$p"
+        } catch (e: Exception) { "" }
+    }
 
     var currentValue by remember { mutableStateOf(readCurrentProxy()) }
+    var linkProxyValue by remember { mutableStateOf(readLinkProxy()) }
     var editValue by remember { mutableStateOf(currentValue) }
     var snackbarMessage by remember { mutableStateOf<String?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -43,14 +63,22 @@ fun SystemProxyScreen(navController: NavController) {
 
     fun refresh() {
         currentValue = readCurrentProxy()
+        linkProxyValue = readLinkProxy()
         editValue = currentValue
     }
 
     fun apply() {
         try {
-            Settings.Global.putString(context.contentResolver, Settings.Global.HTTP_PROXY, editValue.trim())
-            currentValue = editValue.trim()
-            snackbarMessage = "Proxy set to: ${editValue.trim().ifEmpty { "(empty)" }}"
+            val value = editValue.trim()
+            val host = value.substringBefore(":")
+            val port = value.substringAfter(":", "")
+            // Set both key families
+            Settings.Global.putString(context.contentResolver, Settings.Global.HTTP_PROXY, value)
+            Settings.Global.putString(context.contentResolver, "global_http_proxy_host", host)
+            Settings.Global.putString(context.contentResolver, "global_http_proxy_port", port)
+            Settings.Global.putString(context.contentResolver, "global_http_proxy_exclusion_list", "")
+            currentValue = value
+            snackbarMessage = "Proxy set to: $value"
         } catch (e: Exception) {
             snackbarMessage = "Error: ${e.message}"
         }
@@ -58,7 +86,12 @@ fun SystemProxyScreen(navController: NavController) {
 
     fun clear() {
         try {
-            Settings.Global.putString(context.contentResolver, Settings.Global.HTTP_PROXY, "")
+            // Delete all proxy key families via ContentResolver (putString("") is unreliable on Android 13+)
+            context.contentResolver.delete(Settings.Global.getUriFor(Settings.Global.HTTP_PROXY), null, null)
+            context.contentResolver.delete(Settings.Global.getUriFor("global_http_proxy_host"), null, null)
+            context.contentResolver.delete(Settings.Global.getUriFor("global_http_proxy_port"), null, null)
+            context.contentResolver.delete(Settings.Global.getUriFor("global_http_proxy_exclusion_list"), null, null)
+            context.contentResolver.delete(Settings.Global.getUriFor("global_proxy_pac_url"), null, null)
             currentValue = ""
             editValue = ""
             snackbarMessage = "Proxy cleared"
@@ -126,10 +159,10 @@ fun SystemProxyScreen(navController: NavController) {
                 }
             }
 
-            // Current value card
+            // Current value card (Settings.Global)
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Current value", style = MaterialTheme.typography.labelMedium)
+                    Text("Settings.Global proxy", style = MaterialTheme.typography.labelMedium)
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = currentValue.ifEmpty { "(not set)" },
@@ -140,6 +173,54 @@ fun SystemProxyScreen(navController: NavController) {
                         else
                             MaterialTheme.colorScheme.primary
                     )
+                }
+            }
+
+            // Active network proxy (what Chrome actually reads via LinkProperties)
+            val linkProxyIsStale = linkProxyValue.isNotEmpty() && currentValue.isEmpty()
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = if (linkProxyIsStale)
+                    CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                else
+                    CardDefaults.cardColors()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Active network proxy (LinkProperties)", style = MaterialTheme.typography.labelMedium)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = linkProxyValue.ifEmpty { "(none)" },
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = if (linkProxyValue.isEmpty())
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        else if (linkProxyIsStale)
+                            MaterialTheme.colorScheme.error
+                        else
+                            MaterialTheme.colorScheme.primary
+                    )
+                    if (linkProxyIsStale) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "Per-network WiFi proxy is set — Chrome will fail even with no global proxy.\n" +
+                            "Fix: WiFi Settings → long-press network → Modify → Proxy → None",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                })
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            )
+                        ) {
+                            Text("Open WiFi Settings")
+                        }
+                    }
                 }
             }
 

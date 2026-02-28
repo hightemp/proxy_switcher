@@ -9,17 +9,19 @@ VERSION_CODE := $(shell echo "$$(( $(MAJOR) * 10000 + $(MINOR) * 100 + $(PATCH) 
 GRADLE_FILE  := app/build.gradle.kts
 TAG          := v$(VERSION)
 
-.PHONY: help release tag update-version build-local install adb-grant
+.PHONY: help release tag update-version build-local install adb-grant adb-clear-proxy adb-check-proxy
 
 # ── default ──────────────────────────────────────────────────────────────────
 help:
 	@echo ""
-	@echo "  make release      Update gradle version, commit, tag and push → triggers CI"
-	@echo "  make tag          Create and push git tag only (no gradle update)"
-	@echo "  make update-version  Update versionCode/versionName in build.gradle.kts only"
-	@echo "  make build-local  Build debug APK locally"
-	@echo "  make install      Build and install debug APK on connected device"
-	@echo "  make adb-grant    Grant WRITE_SECURE_SETTINGS to the app"
+	@echo "  make release          Update gradle version, commit, tag and push → triggers CI"
+	@echo "  make tag              Create and push git tag only (no gradle update)"
+	@echo "  make update-version   Update versionCode/versionName in build.gradle.kts only"
+	@echo "  make build-local      Build debug APK locally"
+	@echo "  make install          Build and install debug APK on connected device"
+	@echo "  make adb-grant        Grant WRITE_SECURE_SETTINGS to the app"
+	@echo "  make adb-clear-proxy  Emergency: delete all system proxy settings on device"
+	@echo "  make adb-check-proxy  Show all proxy-related settings on device (global + wifi)"
 	@echo ""
 	@echo "  Current: VERSION=$(VERSION)  versionCode=$(VERSION_CODE)  tag=$(TAG)"
 	@echo ""
@@ -65,6 +67,25 @@ install:
 adb-grant:
 	adb shell pm grant com.hightemp.proxy_switcher android.permission.WRITE_SECURE_SETTINGS
 	@echo "✓ WRITE_SECURE_SETTINGS granted"
+
+adb-clear-proxy:
+	-adb shell settings delete global http_proxy
+	-adb shell settings delete global global_http_proxy_host
+	-adb shell settings delete global global_http_proxy_port
+	-adb shell settings delete global global_http_proxy_exclusion_list
+	-adb shell settings delete global global_proxy_pac_url
+	@echo "✓ All system proxy settings cleared (Settings.Global)"
+	@echo "⚠  Per-network WiFi proxy is NOT affected. If Chrome still fails:"
+	@echo "   WiFi Settings → long-press network → Modify → Proxy → None"
+
+adb-check-proxy:
+	@echo "=== Settings.Global proxy keys ==="
+	-adb shell settings get global http_proxy
+	-adb shell settings get global global_http_proxy_host
+	-adb shell settings get global global_http_proxy_port
+	-adb shell settings get global global_proxy_pac_url
+	@echo "=== Per-network WiFi proxy (from dumpsys wifi) ==="
+	-adb shell dumpsys wifi | grep -E "(HTTP proxy|Proxy settings)" | sort -u
 
 # ── guard: warn if there are uncommitted changes ─────────────────────────────
 _check-clean:
