@@ -62,6 +62,29 @@ adb shell pm grant com.hightemp.proxy_switcher android.permission.WRITE_SECURE_S
 
 Now all your HTTP/HTTPS traffic will be routed through the selected upstream proxy.
 
+## 🔧 ADB Debugging
+
+### Check current system proxy
+```bash
+adb shell settings get global http_proxy
+```
+Returns `127.0.0.1:8080` while the proxy is running, or the previous value / `null` after it stops.
+
+### Reset system proxy manually
+If the app was killed unexpectedly and the proxy setting was not restored, clear it with:
+```bash
+adb shell settings delete global http_proxy
+```
+Or set it back to a specific value:
+```bash
+adb shell settings put global http_proxy <host>:<port>
+```
+
+### View proxy logs in real time
+```bash
+adb logcat -s ProxyServer:D ProxyService:D
+```
+
 ## Screenshots
 
 <img src="screenshots/photo_2025-11-22_10-17-00.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-08.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-13.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-18.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-22.jpg" width="19%" />
