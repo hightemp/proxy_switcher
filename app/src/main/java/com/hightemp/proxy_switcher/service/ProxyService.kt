@@ -24,7 +24,9 @@ import com.hightemp.proxy_switcher.utils.AppLogger
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -36,12 +38,15 @@ class ProxyService : Service() {
 
     private val proxyServer = ProxyServer()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    @Volatile private var shouldRun = false
+    @Volatile private var startJob: Job? = null
 
     companion object {
         const val CHANNEL_ID = "ProxyServiceChannel"
         const val ACTION_START = "ACTION_START"
         const val ACTION_STOP = "ACTION_STOP"
         const val EXTRA_PROXY_ID = "EXTRA_PROXY_ID"
+        private const val LOCAL_PROXY_VALUE = "127.0.0.1:8080"
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -65,13 +70,30 @@ class ProxyService : Service() {
     }
 
     private fun startProxy(proxyId: Long) {
+        shouldRun = true
+        // Cancel any in-flight start sequence to avoid START/STOP race.
+        startJob?.cancel()
+
         val notification = createNotification("Starting Proxy...")
         startForeground(1, notification)
 
-        scope.launch {
+        startJob = scope.launch {
             val proxy = if (proxyId != -1L) repository.getProxyById(proxyId) else null
+
+            if (!shouldRun) return@launch
             proxyServer.start(8080, proxy)
+
+            if (!shouldRun) {
+                proxyServer.stop()
+                return@launch
+            }
             applySystemProxy()
+
+            if (!shouldRun) {
+                restoreSystemProxy()
+                proxyServer.stop()
+                return@launch
+            }
 
             val contentText = if (proxy != null) "Running on :8080 via ${proxy.host}" else "Running on :8080 (Direct)"
             val updatedNotification = createNotification(contentText)
@@ -81,10 +103,17 @@ class ProxyService : Service() {
     }
 
     private fun stopProxy() {
-        restoreSystemProxy()
-        proxyServer.stop()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        scope.launch {
+            shouldRun = false
+            startJob?.let { job ->
+                job.cancelAndJoin()
+            }
+            startJob = null
+            restoreSystemProxy()
+            proxyServer.stop()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     private fun applySystemProxy() {
@@ -94,11 +123,21 @@ class ProxyService : Service() {
         }
         try {
             // Save all proxy-related keys so we can restore them exactly
-            val oldHttpProxy  = Settings.Global.getString(contentResolver, Settings.Global.HTTP_PROXY) ?: ""
-            val oldGlobalHost = Settings.Global.getString(contentResolver, "global_http_proxy_host") ?: ""
-            val oldGlobalPort = Settings.Global.getString(contentResolver, "global_http_proxy_port") ?: ""
+            var oldHttpProxy  = Settings.Global.getString(contentResolver, Settings.Global.HTTP_PROXY) ?: ""
+            var oldGlobalHost = Settings.Global.getString(contentResolver, "global_http_proxy_host") ?: ""
+            var oldGlobalPort = Settings.Global.getString(contentResolver, "global_http_proxy_port") ?: ""
             val oldGlobalExcl = Settings.Global.getString(contentResolver, "global_http_proxy_exclusion_list") ?: ""
             val oldPacUrl     = Settings.Global.getString(contentResolver, "global_proxy_pac_url") ?: ""
+
+            // If stale local-loopback proxy remained from a previous crash/run, do not preserve it
+            // as the "original" state; we want STOP to clear it.
+            if (oldHttpProxy == LOCAL_PROXY_VALUE) {
+                oldHttpProxy = ""
+            }
+            if (oldGlobalHost == "127.0.0.1" && oldGlobalPort == "8080") {
+                oldGlobalHost = ""
+                oldGlobalPort = ""
+            }
             getSharedPreferences("proxy_prefs", MODE_PRIVATE).edit()
                 .putString("original_proxy", oldHttpProxy)
                 .putString("original_global_host", oldGlobalHost)
@@ -110,13 +149,17 @@ class ProxyService : Service() {
             // Clear PAC URL first — a non-empty PAC URL overrides all other proxy settings
             contentResolver.delete(Settings.Global.getUriFor("global_proxy_pac_url"), null, null)
             // Set both: http_proxy (legacy) + global_http_proxy_* (used by Chrome and Android system)
-            Settings.Global.putString(contentResolver, Settings.Global.HTTP_PROXY, "127.0.0.1:8080")
+            Settings.Global.putString(contentResolver, Settings.Global.HTTP_PROXY, LOCAL_PROXY_VALUE)
             Settings.Global.putString(contentResolver, "global_http_proxy_host", "127.0.0.1")
             Settings.Global.putString(contentResolver, "global_http_proxy_port", "8080")
             Settings.Global.putString(contentResolver, "global_http_proxy_exclusion_list", "")
             AppLogger.log("ProxyService", "System proxy set to 127.0.0.1:8080")
-            // Also save the current per-network WiFi proxy before changing it
-            saveAndSetWifiNetworkProxy("127.0.0.1", 8080)
+            // Do not touch per-network Wi-Fi proxy on Android 10+ (restricted for non-system apps).
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                saveAndSetWifiNetworkProxy("127.0.0.1", 8080)
+            } else {
+                AppLogger.log("ProxyService", "Skipping per-network WiFi proxy change on Android 10+")
+            }
         } catch (e: Exception) {
             AppLogger.error("ProxyService", "Failed to set system proxy", e)
         }
@@ -132,34 +175,40 @@ class ProxyService : Service() {
             val originalExcl = prefs.getString("original_global_excl", "") ?: ""
             val originalPac  = prefs.getString("original_pac_url", "") ?: ""
 
-            // Restore or delete http_proxy
-            if (original.isEmpty()) {
-                contentResolver.delete(Settings.Global.getUriFor(Settings.Global.HTTP_PROXY), null, null)
+            // On Samsung/Chrome stacks, delete() can leave proxy effectively "sticky".
+            // Force-clear via :0 when no original proxy should be restored.
+            val shouldClearHttpProxy = original.isEmpty() || original == LOCAL_PROXY_VALUE
+            if (shouldClearHttpProxy) {
+                Settings.Global.putString(contentResolver, Settings.Global.HTTP_PROXY, ":0")
             } else {
                 Settings.Global.putString(contentResolver, Settings.Global.HTTP_PROXY, original)
             }
 
-            // Restore or delete global_http_proxy_* keys
+            // Restore or clear global_http_proxy_* keys
             if (originalHost.isEmpty()) {
-                contentResolver.delete(Settings.Global.getUriFor("global_http_proxy_host"), null, null)
-                contentResolver.delete(Settings.Global.getUriFor("global_http_proxy_port"), null, null)
-                contentResolver.delete(Settings.Global.getUriFor("global_http_proxy_exclusion_list"), null, null)
+                Settings.Global.putString(contentResolver, "global_http_proxy_host", "")
+                Settings.Global.putString(contentResolver, "global_http_proxy_port", "0")
+                Settings.Global.putString(contentResolver, "global_http_proxy_exclusion_list", "")
             } else {
                 Settings.Global.putString(contentResolver, "global_http_proxy_host", originalHost)
                 Settings.Global.putString(contentResolver, "global_http_proxy_port", originalPort)
                 Settings.Global.putString(contentResolver, "global_http_proxy_exclusion_list", originalExcl)
             }
 
-            // Restore or delete PAC URL
+            // Restore or clear PAC URL
             if (originalPac.isEmpty()) {
-                contentResolver.delete(Settings.Global.getUriFor("global_proxy_pac_url"), null, null)
+                Settings.Global.putString(contentResolver, "global_proxy_pac_url", "")
             } else {
                 Settings.Global.putString(contentResolver, "global_proxy_pac_url", originalPac)
             }
 
-            AppLogger.log("ProxyService", "System proxy restored (http_proxy='${original.ifEmpty { "deleted" }}', global_host='${originalHost.ifEmpty { "deleted" }}')")
-            // Also restore the per-network WiFi proxy
-            restoreWifiNetworkProxy()
+            AppLogger.log("ProxyService", "System proxy restored (http_proxy='${if (shouldClearHttpProxy) ":0" else original}', global_host='${originalHost.ifEmpty { "cleared" }}')")
+            // Per-network Wi-Fi proxy restore is only viable on Android < 10 for regular apps.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                restoreWifiNetworkProxy()
+            } else {
+                AppLogger.log("ProxyService", "Skipping per-network WiFi proxy restore on Android 10+")
+            }
         } catch (e: Exception) {
             AppLogger.error("ProxyService", "Failed to restore system proxy", e)
         }
