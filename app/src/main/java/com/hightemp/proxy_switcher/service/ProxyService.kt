@@ -106,7 +106,13 @@ class ProxyService : Service() {
         try {
             val original = getSharedPreferences("proxy_prefs", MODE_PRIVATE)
                 .getString("original_proxy", "") ?: ""
-            Settings.Global.putString(contentResolver, Settings.Global.HTTP_PROXY, original)
+            // Pass null to DELETE the key when there was no proxy before;
+            // passing "" leaves a broken proxy entry and kills internet on some devices.
+            Settings.Global.putString(
+                contentResolver,
+                Settings.Global.HTTP_PROXY,
+                original.ifEmpty { null }
+            )
             AppLogger.log("ProxyService", "System proxy restored to: '${original.ifEmpty { "none" }}'")
         } catch (e: Exception) {
             AppLogger.error("ProxyService", "Failed to restore system proxy", e)
