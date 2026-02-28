@@ -8,6 +8,7 @@ A simple and efficient Android application that runs a local HTTP proxy server o
 *   **Upstream Support:** Route traffic through external HTTP, HTTPS, or SOCKS5 proxies.
 *   **Authentication:** Supports username/password authentication for upstream proxies.
 *   **Proxy Management:** Add, edit, and delete proxies from a local list.
+*   **Auto System Proxy:** Automatically sets the device system proxy to `127.0.0.1:8080` on start and restores the original setting on stop (requires one-time ADB permission grant).
 *   **Logs:** Built-in log viewer for debugging connection issues.
 *   **Foreground Service:** Keeps the proxy running in the background.
 
@@ -31,6 +32,16 @@ Alternatively, use Gradle:
 ./gradlew installDebug
 ```
 
+### Grant system proxy permission (one-time)
+
+To allow the app to automatically set and restore the device system proxy, grant the `WRITE_SECURE_SETTINGS` permission via ADB after installation:
+
+```bash
+adb shell pm grant com.hightemp.proxy_switcher android.permission.WRITE_SECURE_SETTINGS
+```
+
+> This permission is preserved across updates as long as the app is not uninstalled. If you reinstall from scratch, run the command again.
+
 ## 📱 Usage
 
 1.  **Configure App:**
@@ -39,10 +50,13 @@ Alternatively, use Gradle:
     *   Click **START PROXY**.
 
 2.  **Configure Device:**
-    *   Go to your Android **Wi-Fi Settings**.
-    *   Modify the current network.
+
+    **Option A — Automatic (recommended):** If you granted `WRITE_SECURE_SETTINGS` via ADB, the app sets `127.0.0.1:8080` as the system proxy automatically when you press **START PROXY** and restores the original setting on **STOP**.
+
+    **Option B — Manual:** Set the proxy in Wi-Fi settings yourself:
+    *   Go to **Wi-Fi Settings** → modify the current network.
     *   Set **Proxy** to `Manual`.
-    *   **Hostname:** `127.0.0.1` (or `localhost`)
+    *   **Hostname:** `127.0.0.1`
     *   **Port:** `8080`
     *   Save settings.
 
