@@ -9,6 +9,9 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.*
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.Executors
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLSocketFactory
 
 class ProxyServer {
@@ -30,6 +33,10 @@ class ProxyServer {
     private val isRunning = AtomicBoolean(false)
     private var upstreamProxy: ProxyEntity? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val ioThreadSeq = AtomicInteger(0)
+    private val ioExecutor: ExecutorService = Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "proxy-io-${ioThreadSeq.incrementAndGet()}").apply { isDaemon = true }
+    }
 
     fun start(port: Int, proxy: ProxyEntity?) {
         if (isRunning.get()) return
@@ -44,7 +51,7 @@ class ProxyServer {
                 while (isRunning.get()) {
                     try {
                         val clientSocket = serverSocket?.accept() ?: break
-                        launch { handleClient(clientSocket) }
+                        runOnIo("client") { handleClient(clientSocket) }
                     } catch (e: Exception) {
                         if (isRunning.get()) AppLogger.error("ProxyServer", "Error accepting connection", e)
                     }
@@ -75,7 +82,9 @@ class ProxyServer {
 
             val input = clientSocket.getInputStream()
 
-            // Read the initial request line to determine the target
+            // Read initial proxy request bytes.
+            // For CONNECT, some clients may already append TLS bytes after \r\n\r\n in the same packet.
+            // Those bytes must be forwarded to upstream or TLS handshakes stall/retry.
             val buffer = ByteArray(REQUEST_BUF)
             val bytesRead = input.read(buffer)
             if (bytesRead == -1) {
@@ -83,7 +92,9 @@ class ProxyServer {
                 return
             }
 
-            val request = String(buffer, 0, bytesRead)
+            val headerEnd = findHeaderEnd(buffer, bytesRead)
+            val requestLen = if (headerEnd != -1) headerEnd else bytesRead
+            val request = String(buffer, 0, requestLen, Charsets.ISO_8859_1)
             val lines = request.split("\r\n")
             val requestLine = lines[0]
             val parts = requestLine.split(" ")
@@ -96,7 +107,9 @@ class ProxyServer {
             val url = parts[1]
 
             if (method == "CONNECT") {
-                handleHttpsConnect(clientSocket, url, upstreamProxy)
+                val pendingOffset = if (headerEnd != -1) headerEnd else bytesRead
+                val pendingLen = (bytesRead - pendingOffset).coerceAtLeast(0)
+                handleHttpsConnect(clientSocket, url, upstreamProxy, buffer, pendingOffset, pendingLen)
             } else {
                 handleHttpRequest(clientSocket, buffer, bytesRead, url, method, upstreamProxy)
             }
@@ -107,10 +120,20 @@ class ProxyServer {
         }
     }
 
-    private fun handleHttpsConnect(clientSocket: Socket, url: String, proxy: ProxyEntity?) {
-        val hostPort = url.split(":")
-        val targetHost = hostPort[0]
-        val targetPort = if (hostPort.size > 1) hostPort[1].toInt() else 443
+    private fun handleHttpsConnect(
+        clientSocket: Socket,
+        url: String,
+        proxy: ProxyEntity?,
+        pendingBytes: ByteArray,
+        pendingOffset: Int,
+        pendingLen: Int
+    ) {
+        val colon = url.lastIndexOf(':')
+        var targetHost = if (colon > 0) url.substring(0, colon) else url
+        if (targetHost.startsWith("[") && targetHost.endsWith("]") && targetHost.length > 2) {
+            targetHost = targetHost.substring(1, targetHost.length - 1)
+        }
+        val targetPort = if (colon > 0) url.substring(colon + 1).toIntOrNull() ?: 443 else 443
 
         try {
             val upstreamSocket = connectToUpstream(targetHost, targetPort, proxy)
@@ -118,6 +141,12 @@ class ProxyServer {
             // Send 200 Connection Established to client
             clientSocket.getOutputStream().write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
             clientSocket.getOutputStream().flush()
+
+            // Forward any bytes that were already read from client beyond CONNECT headers
+            // (typically beginning of TLS ClientHello).
+            if (pendingLen > 0) {
+                upstreamSocket.getOutputStream().write(pendingBytes, pendingOffset, pendingLen)
+            }
 
             tunnel(clientSocket, upstreamSocket)
 
@@ -359,6 +388,22 @@ class ProxyServer {
         }
     }
 
+    private fun findHeaderEnd(buffer: ByteArray, len: Int): Int {
+        if (len < 4) return -1
+        var i = 0
+        while (i <= len - 4) {
+            if (buffer[i] == '\r'.code.toByte() &&
+                buffer[i + 1] == '\n'.code.toByte() &&
+                buffer[i + 2] == '\r'.code.toByte() &&
+                buffer[i + 3] == '\n'.code.toByte()
+            ) {
+                return i + 4
+            }
+            i++
+        }
+        return -1
+    }
+
     /**
      * Bidirectional tunnel between [client] and [server].
      *
@@ -408,12 +453,23 @@ class ProxyServer {
         }
     }
 
-    private inline fun daemonThread(name: String, crossinline block: () -> Unit) =
-        Thread({
+    private inline fun daemonThread(name: String, crossinline block: () -> Unit) {
+        runOnIo(name) {
             try {
                 block()
             } catch (e: Exception) {
                 AppLogger.error("ProxyServer", "Tunnel thread '$name' failed", e)
             }
-        }, "proxy-tunnel-$name").also { it.isDaemon = true; it.start() }
+        }
+    }
+
+    private fun runOnIo(name: String, block: () -> Unit) {
+        ioExecutor.execute {
+            try {
+                block()
+            } catch (e: Exception) {
+                AppLogger.error("ProxyServer", "IO task '$name' failed", e)
+            }
+        }
+    }
 }
