@@ -369,20 +369,26 @@ class ProxyServer {
      * writes immediately — zero scheduler overhead, maximising throughput per connection.
      */
     private fun tunnel(client: Socket, server: Socket) {
+        val closed = AtomicBoolean(false)
+        fun closeBoth() {
+            if (closed.compareAndSet(false, true)) {
+                try { client.close() } catch (_: Exception) {}
+                try { server.close() } catch (_: Exception) {}
+            }
+        }
+
         daemonThread("c→s") {
             try {
                 pipe(client.getInputStream(), server.getOutputStream())
             } finally {
-                try { client.shutdownOutput() } catch (_: Exception) {}
-                try { server.close() }          catch (_: Exception) {}
+                closeBoth()
             }
         }
         daemonThread("s→c") {
             try {
                 pipe(server.getInputStream(), client.getOutputStream())
             } finally {
-                try { server.shutdownOutput() } catch (_: Exception) {}
-                try { client.close() }          catch (_: Exception) {}
+                closeBoth()
             }
         }
     }
@@ -390,12 +396,24 @@ class ProxyServer {
     /** Saturates the pipe: reads up to [TUNNEL_BUF] bytes and writes immediately. */
     private fun pipe(src: InputStream, dst: OutputStream) {
         val buf = ByteArray(TUNNEL_BUF)
-        var n: Int
-        while (src.read(buf).also { n = it } != -1) {
-            dst.write(buf, 0, n)
+        try {
+            var n: Int
+            while (src.read(buf).also { n = it } != -1) {
+                dst.write(buf, 0, n)
+            }
+        } catch (_: SocketException) {
+            // Normal during tunnel teardown when peer closes one side first.
+        } catch (_: IOException) {
+            // Treat transport errors as end-of-stream for this direction.
         }
     }
 
     private inline fun daemonThread(name: String, crossinline block: () -> Unit) =
-        Thread({ block() }, "proxy-tunnel-$name").also { it.isDaemon = true; it.start() }
+        Thread({
+            try {
+                block()
+            } catch (e: Exception) {
+                AppLogger.error("ProxyServer", "Tunnel thread '$name' failed", e)
+            }
+        }, "proxy-tunnel-$name").also { it.isDaemon = true; it.start() }
 }
