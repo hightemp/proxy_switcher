@@ -1,5 +1,10 @@
 # Proxy Switcher – Copilot Instructions
 
+## Skills
+
+- Proxy recovery workflow for sticky Android proxy state:
+  `.github/skills/android-proxy-recovery/SKILL.md`
+
 ## Architecture
 
 MVVM + Clean Architecture on Android (Kotlin, Jetpack Compose, Hilt, Room).

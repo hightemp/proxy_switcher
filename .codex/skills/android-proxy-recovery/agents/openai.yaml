@@ -1,0 +1,4 @@
+interface:
+  display_name: "Android Proxy Recovery"
+  short_description: "Fix sticky Android/Chrome proxy failures"
+  default_prompt: "Use $android-proxy-recovery to diagnose and fix ERR_PROXY_CONNECTION_FAILED after proxy STOP on Android."
