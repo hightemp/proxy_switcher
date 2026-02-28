@@ -6,6 +6,7 @@ import com.hightemp.proxy_switcher.utils.AppLogger
 import kotlinx.coroutines.*
 import java.io.IOException
 import java.io.InputStream
+import java.io.OutputStream
 import java.net.*
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLSocketFactory
@@ -13,12 +14,14 @@ import javax.net.ssl.SSLSocketFactory
 class ProxyServer {
 
     companion object {
-        // 64 KB tunnel buffer — good balance between RAM and throughput on mobile
-        private const val TUNNEL_BUF = 65536
+        // 256 KB tunnel buffer — bandwidth-delay product for 300 Mbps / 40 ms RTT = 1.5 MB;
+        // larger buf means fewer read/write syscalls per second
+        private const val TUNNEL_BUF = 262144
         // 16 KB for the initial HTTP request read — enough for any real-world header set
         private const val REQUEST_BUF = 16384
-        // TCP socket buffer hint — increases kernel ring buffer for burst traffic
-        private const val SOCK_BUF = 262144 // 256 KB
+        // 4 MB socket buffers — required to saturate a 300 Mbps link with 40 ms RTT:
+        //   BDP = 37.5 MB/s × 0.04 s = 1.5 MB → 4 MB gives ~3× headroom
+        private const val SOCK_BUF = 4 * 1024 * 1024
         // Accept backlog — allow many pending connections before the OS drops them
         private const val BACKLOG = 256
     }
@@ -199,6 +202,8 @@ class ProxyServer {
         socket.tcpNoDelay = true
         socket.setReceiveBufferSize(SOCK_BUF)
         socket.setSendBufferSize(SOCK_BUF)
+        // Keep long-lived Telegram/MTProto tunnels alive through NAT
+        socket.keepAlive = true
         // Hint: favour bandwidth over latency/connection-time (0 = don't care, higher = more important)
         socket.setPerformancePreferences(0, 0, 2)
     }
@@ -356,40 +361,41 @@ class ProxyServer {
 
     /**
      * Bidirectional tunnel between [client] and [server].
-     * Each direction runs in its own coroutine on Dispatchers.IO.
-     * No flush() in the hot path — SocketOutputStream writes go directly to the kernel TCP buffer.
+     *
+     * Each direction runs on its own dedicated daemon thread rather than a coroutine.
+     * Reason: Dispatchers.IO has a shared pool capped at 64 threads. In a tight
+     * read→write loop that never suspends, coroutines still go through the scheduler
+     * on each iteration, adding latency jitter. A daemon thread blocks on read() and
+     * writes immediately — zero scheduler overhead, maximising throughput per connection.
      */
     private fun tunnel(client: Socket, server: Socket) {
-        scope.launch {
+        daemonThread("c→s") {
             try {
-                val src = client.getInputStream()
-                val dst = server.getOutputStream()
-                val buf = ByteArray(TUNNEL_BUF)
-                var n: Int
-                while (src.read(buf).also { n = it } != -1) {
-                    dst.write(buf, 0, n)
-                }
-            } catch (_: Exception) {
+                pipe(client.getInputStream(), server.getOutputStream())
             } finally {
                 try { client.shutdownOutput() } catch (_: Exception) {}
-                try { server.close() } catch (_: Exception) {}
+                try { server.close() }          catch (_: Exception) {}
             }
         }
-
-        scope.launch {
+        daemonThread("s→c") {
             try {
-                val src = server.getInputStream()
-                val dst = client.getOutputStream()
-                val buf = ByteArray(TUNNEL_BUF)
-                var n: Int
-                while (src.read(buf).also { n = it } != -1) {
-                    dst.write(buf, 0, n)
-                }
-            } catch (_: Exception) {
+                pipe(server.getInputStream(), client.getOutputStream())
             } finally {
                 try { server.shutdownOutput() } catch (_: Exception) {}
-                try { client.close() } catch (_: Exception) {}
+                try { client.close() }          catch (_: Exception) {}
             }
         }
     }
+
+    /** Saturates the pipe: reads up to [TUNNEL_BUF] bytes and writes immediately. */
+    private fun pipe(src: InputStream, dst: OutputStream) {
+        val buf = ByteArray(TUNNEL_BUF)
+        var n: Int
+        while (src.read(buf).also { n = it } != -1) {
+            dst.write(buf, 0, n)
+        }
+    }
+
+    private inline fun daemonThread(name: String, crossinline block: () -> Unit) =
+        Thread({ block() }, "proxy-tunnel-$name").also { it.isDaemon = true; it.start() }
 }
