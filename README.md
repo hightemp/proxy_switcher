@@ -1,111 +1,162 @@
 # Proxy Switcher
 
-![Experimental](https://img.shields.io/badge/status-experimental-orange)
+![Version](https://img.shields.io/badge/version-1.0.2-blue)
+![Status](https://img.shields.io/badge/status-experimental-orange)
 ![Vibe Coded](https://img.shields.io/badge/vibe-coded-blueviolet)
 
-A simple and efficient Android application that runs a local HTTP proxy server on your device, allowing you to route your traffic through various upstream proxies (HTTP, HTTPS, SOCKS5).
+Android application that runs a local HTTP proxy server on your device and routes all traffic through an upstream proxy (HTTP, HTTPS, or SOCKS5). Automatically manages the system-wide proxy setting so every application on the device uses it — no root required.
 
-## 🚀 Features
+## Features
 
-*   **Local Proxy Server:** Runs a local HTTP proxy on port `8080`.
-*   **Upstream Support:** Route traffic through external HTTP, HTTPS, or SOCKS5 proxies.
-*   **Authentication:** Supports username/password authentication for upstream proxies.
-*   **Proxy Management:** Add, edit, and delete proxies from a local list.
-*   **Auto System Proxy:** Automatically sets the device system proxy to `127.0.0.1:8080` on start and restores the original setting on stop (requires one-time ADB permission grant).
-*   **Logs:** Built-in log viewer for debugging connection issues.
-*   **Foreground Service:** Keeps the proxy running in the background.
+- **Local Proxy Server** — starts an HTTP proxy on port `8080`
+- **Upstream protocols** — HTTP, HTTPS (TLS), SOCKS5 with optional username/password auth
+- **Auto System Proxy** — sets `127.0.0.1:8080` as the device-wide proxy on START; restores the original on STOP (requires a one-time ADB grant)
+- **Race-safe START/STOP** — in-flight start job is cancelled before restoring proxy settings, preventing stale loopback from getting stuck
+- **Reliable proxy reset** — restores `http_proxy` to `:0` (not delete) so Chrome/Samsung stacks recognise the clear immediately
+- **System Proxy screen** — shows both `Settings.Global` and the actual `LinkProperties` proxy (what Chrome reads). Warns and links to WiFi settings when a per-network proxy is left behind
+- **Proxy Management** — add, edit, delete upstream proxies (stored in Room)
+- **Logs screen** — built-in real-time log viewer
+- **Foreground Service** — proxy keeps running when the app is in the background
 
-## 🛠 Tech Stack
+## Tech Stack
 
-*   **Language:** Kotlin
-*   **UI:** Jetpack Compose (Material 3)
-*   **Architecture:** MVVM + Clean Architecture
-*   **Dependency Injection:** Hilt
-*   **Database:** Room
-*   **Networking:** Custom Socket-based Proxy Core
+| Layer | Technology |
+|---|---|
+| Language | Kotlin |
+| UI | Jetpack Compose (Material 3) |
+| Architecture | MVVM + Clean Architecture |
+| DI | Hilt |
+| Database | Room |
+| Networking | Custom socket-based proxy core |
 
-## 🏃 How to Run
+## Build & Install
 
-1.  **Clone the repository.**
-2.  **Open in Android Studio.**
-3.  **Build and Run** on an emulator or physical device.
-
-Alternatively, use Gradle:
 ```bash
+# Build debug APK
+./gradlew assembleDebug
+
+# Build and install on connected device
 ./gradlew installDebug
+# or
+make install
 ```
 
-### Grant system proxy permission (one-time)
+### One-time ADB permission grant
 
-To allow the app to automatically set and restore the device system proxy, grant the `WRITE_SECURE_SETTINGS` permission via ADB after installation:
+Required for automatic system proxy management:
 
 ```bash
+make adb-grant
+# equivalent to:
 adb shell pm grant com.hightemp.proxy_switcher android.permission.WRITE_SECURE_SETTINGS
 ```
 
-> This permission is preserved across updates as long as the app is not uninstalled. If you reinstall from scratch, run the command again.
+> The permission survives app updates but is lost on full uninstall. Run the command again after reinstalling from scratch.
 
-## 📱 Usage
+## Usage
 
-1.  **Configure App:**
-    *   Open the app and add your upstream proxy (Host, Port, Type, Auth).
-    *   Select the proxy from the dropdown on the home screen.
-    *   Click **START PROXY**.
+1. Open the app → tap the gear icon → add an upstream proxy (host, port, type, auth)
+2. Select the proxy in the dropdown on the home screen
+3. Tap **START PROXY**
 
-2.  **Configure Device:**
+**With `WRITE_SECURE_SETTINGS` granted** — the app automatically sets the system proxy and restores it on STOP. All device traffic (Chrome, system apps, etc.) is routed through the upstream.
 
-    **Option A — Automatic (recommended):** If you granted `WRITE_SECURE_SETTINGS` via ADB, the app sets `127.0.0.1:8080` as the system proxy automatically when you press **START PROXY** and restores the original setting on **STOP**.
+**Without the permission** — set the proxy manually once:  
+WiFi Settings → long-press active network → Modify → Advanced → Proxy: Manual → `127.0.0.1:8080` → Save
 
-    **Option B — Manual:** Set the proxy in Wi-Fi settings yourself:
-    *   Go to **Wi-Fi Settings** → modify the current network.
-    *   Set **Proxy** to `Manual`.
-    *   **Hostname:** `127.0.0.1`
-    *   **Port:** `8080`
-    *   Save settings.
+## Makefile Targets
 
-Now all your HTTP/HTTPS traffic will be routed through the selected upstream proxy.
-
-## 🔧 ADB Debugging
-
-### Check current system proxy
-```bash
-adb shell settings get global http_proxy
-# or use the convenience target:
-make adb-check-proxy
 ```
-Returns `127.0.0.1:8080` while the proxy is running, or the previous value / `null` after it stops.
+make help             # list all targets with descriptions
+make build-local      # ./gradlew assembleDebug
+make install          # ./gradlew installDebug
+make adb-grant        # grant WRITE_SECURE_SETTINGS
+make adb-check-proxy  # show all proxy keys: Settings.Global + per-network WiFi
+make adb-clear-proxy  # emergency: reset all proxy settings on device
+make release          # bump VERSION → gradle → commit → tag → push (triggers CI)
+make update-version   # update versionCode/versionName in build.gradle.kts only
+make tag              # create and push git tag only
+```
 
-### Reset system proxy manually
-If the app was killed unexpectedly and the proxy setting was not restored, clear both proxy key families:
+## ADB Debugging
+
+### Inspect current proxy state
+
+```bash
+make adb-check-proxy
+# Shows Settings.Global keys AND the per-network WiFi proxy from dumpsys wifi
+```
+
+### Emergency reset
+
 ```bash
 make adb-clear-proxy
-# or manually:
-adb shell settings delete global http_proxy
-adb shell settings delete global global_http_proxy_host
-adb shell settings delete global global_http_proxy_port
-adb shell settings delete global global_http_proxy_exclusion_list
-adb shell settings delete global global_proxy_pac_url
 ```
-> Android uses several proxy key families: `http_proxy` (legacy), `global_http_proxy_*` (used by Chrome and the system), and `global_proxy_pac_url` (PAC auto-config). All must be cleared.
 
-### Per-network WiFi proxy (separate from Settings.Global)
+This resets all `Settings.Global` proxy keys. It does **not** touch per-network WiFi proxy (see below).
 
-Chrome and the Android network stack read the proxy from **LinkProperties** of the active network, not just from `Settings.Global`. If you previously set the WiFi proxy manually (Settings → WiFi → Modify → Proxy → Manual), that per-network proxy persists independently.
+### Diagnosing `ERR_PROXY_CONNECTION_FAILED` after STOP
 
-**Symptom**: `adb shell settings list global | grep proxy` returns nothing, but Chrome still shows `ERR_PROXY_CONNECTION_FAILED`.
+Android proxy state lives in two separate places:
 
-**Diagnosis**: `make adb-check-proxy` — look for `HTTP proxy: [127.0.0.1] 8080` in the WiFi dump.
+| Source | Keys | Tool |
+|---|---|---|
+| `Settings.Global` | `http_proxy`, `global_http_proxy_*`, `global_proxy_pac_url` | `adb shell settings get global http_proxy` |
+| Per-network WiFi config | stored in `WifiConfiguration` | `adb shell dumpsys wifi \| grep -i proxy` |
 
-**Fix options**:
-1. Open the **System Proxy** screen in the app (NetworkCheck icon in HomeScreen) — it shows both `Settings.Global` and the active `LinkProperties` proxy. If the per-network proxy is stale, an "Open WiFi Settings" button appears.
-2. Manually: **Settings → WiFi → long-press active network → Modify Network → Advanced → Proxy → None → Save**
+**Common cause on Samsung / Android 10+**: `http_proxy` was not cleared properly (delete leaves residue in some ROMs). The app uses `putString("http_proxy", ":0")` to force a hard reset that Chrome and the Samsung network stack recognise correctly.
 
-> The app attempts to clear the per-network proxy via `WifiManager.updateNetwork()` on proxy stop. This works on Android < 10; on Android 10+ it silently fails due to system restrictions.
+**Per-network WiFi proxy**: If the WiFi proxy was set manually before you started using the app's auto-management, it persists independently of `Settings.Global`. On Android 10+ non-system apps cannot modify it programmatically.
 
-### View proxy logs in real time
+**Recovery steps**:
+
+1. Run `make adb-check-proxy` — look for `HTTP proxy: [127.0.0.1] 8080` in the WiFi section
+2. Open the **System Proxy** screen in the app (NetworkCheck icon on the home screen). If the per-network proxy is stale, a red warning and **Open WiFi Settings** button appear
+3. In WiFi Settings: long-press active network → Modify → Advanced → Proxy → **None** → Save
+4. Force-kill Chrome: `adb shell am force-stop com.android.chrome`
+
+After step 3 the issue will not recur as long as the app manages the system proxy automatically.
+
+### Stream proxy logs
+
 ```bash
 adb logcat -s ProxyServer:D ProxyService:D
 ```
+
+## Performance Characteristics
+
+The proxy core (`ProxyServer.kt`) is tuned for mobile network conditions:
+
+- `TCP_NODELAY = true` — removes Nagle-algorithm delays (40–200 ms) on interactive/multiplexed traffic
+- `SO_RCVBUF / SO_SNDBUF = 256 KB` — larger kernel ring buffers reduce back-pressure during burst traffic (video, images)
+- 64 KB tunnel buffer — 16× larger than the original 4 KB, fewer `read/write` iterations on large transfers
+- No `flush()` in the tunnel hot path — `SocketOutputStream.flush()` is a no-op in JVM but adds call overhead in a tight loop
+- Bulk `readNBytes` — eliminates per-byte syscalls during SOCKS5 handshake
+- `BufferedInputStream` for SOCKS5 handshake — batches small reads
+- `ServerSocket` backlog = 256 — handles burst connection arrivals without OS dropping them
+- 16 KB initial request buffer — avoids truncating large HTTP headers (Cookie, Authorization)
+
+## Architecture Notes
+
+```
+app/src/main/java/com/hightemp/proxy_switcher/
+├── data/local/            # Room DB: AppDatabase, ProxyDao, ProxyEntity (ProxyType enum)
+├── data/repository/       # ProxyRepository — thin DAO wrapper
+├── di/                    # Hilt modules (DatabaseModule)
+├── proxy/                 # ProxyServer.kt — socket-based HTTP/HTTPS/SOCKS5 proxy core
+├── service/               # ProxyService.kt — foreground service, port 8080
+├── ui/
+│   ├── screens/           # HomeScreen, ProxyListScreen, AddEditProxyScreen, LogsScreen, SystemProxyScreen
+│   ├── theme/             # Material 3 tokens
+│   └── viewmodel/         # ProxyViewModel (@HiltViewModel)
+└── utils/                 # AppLogger — singleton StateFlow<List<String>>, capped at 1000 entries
+```
+
+Key `ProxyService` behaviours:
+- Saves all proxy keys to `SharedPreferences` on START, restores on STOP
+- Skips stale loopback values (`127.0.0.1:8080`) when saving originals — prevents a previous crash from polluting the restore target
+- Resets `http_proxy` to `:0` instead of deleting — reliable on Samsung/Chrome (SKILL: android-proxy-recovery)
+- Per-network WiFi proxy modified only on Android < 10 (API 29) — restricted for non-system apps on newer versions
 
 ## Screenshots
 
