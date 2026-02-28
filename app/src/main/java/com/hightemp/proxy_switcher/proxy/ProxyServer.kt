@@ -29,6 +29,22 @@ class ProxyServer {
         private const val BACKLOG = 256
     }
 
+    /**
+     * Holds an established upstream connection together with its I/O streams.
+     *
+     * Critical: for SOCKS5 (and buffered HTTP reads) we wrap [Socket.getInputStream] in a
+     * [java.io.BufferedInputStream] during the protocol handshake.  The buffered stream may
+     * pre-read application-layer bytes (e.g. the first TLS record from the target server)
+     * into its internal buffer.  By carrying that same stream in [input] we guarantee those
+     * bytes are forwarded to the client rather than silently discarded when the handshake
+     * helper returns.
+     */
+    private data class ConnectedUpstream(
+        val socket: Socket,
+        val input: InputStream,
+        val output: OutputStream
+    )
+
     private var serverSocket: ServerSocket? = null
     private val isRunning = AtomicBoolean(false)
     private var upstreamProxy: ProxyEntity? = null
@@ -136,7 +152,7 @@ class ProxyServer {
         val targetPort = if (colon > 0) url.substring(colon + 1).toIntOrNull() ?: 443 else 443
 
         try {
-            val upstreamSocket = connectToUpstream(targetHost, targetPort, proxy)
+            val upstream = connectToUpstream(targetHost, targetPort, proxy)
 
             // Send 200 Connection Established to client
             clientSocket.getOutputStream().write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
@@ -145,10 +161,10 @@ class ProxyServer {
             // Forward any bytes that were already read from client beyond CONNECT headers
             // (typically beginning of TLS ClientHello).
             if (pendingLen > 0) {
-                upstreamSocket.getOutputStream().write(pendingBytes, pendingOffset, pendingLen)
+                upstream.output.write(pendingBytes, pendingOffset, pendingLen)
             }
 
-            tunnel(clientSocket, upstreamSocket)
+            tunnel(clientSocket, upstream)
 
         } catch (e: Exception) {
             AppLogger.error("ProxyServer", "HTTPS Connect failed: $url. Error: ${e.message}", e)
@@ -174,16 +190,19 @@ class ProxyServer {
             val host = url.host
             val port = if (url.port != -1) url.port else 80
 
-            val upstreamSocket: Socket
+            var upstream: ConnectedUpstream? = null
             val bufferToWrite: ByteArray
             val bytesToWrite: Int
 
             if (proxy != null && (proxy.type == ProxyType.HTTP || proxy.type == ProxyType.HTTPS)) {
-                // Connect to proxy; use TLS for HTTPS-type proxy
+                // Connect to proxy; use TLS for HTTPS-type proxy.
+                // Buffer sizes MUST be set before connect() so TCP window scale is agreed at SYN time.
                 val tcpSocket = Socket(Proxy.NO_PROXY)
+                tcpSocket.setReceiveBufferSize(SOCK_BUF)
+                tcpSocket.setSendBufferSize(SOCK_BUF)
                 tcpSocket.connect(InetSocketAddress(proxy.host, proxy.port), 15000)
                 applySocketPerf(tcpSocket)
-                upstreamSocket = if (proxy.type == ProxyType.HTTPS) {
+                val upstreamSocket: Socket = if (proxy.type == ProxyType.HTTPS) {
                     val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                         .createSocket(tcpSocket, proxy.host, proxy.port, true) as javax.net.ssl.SSLSocket
                     ssl.startHandshake()
@@ -191,19 +210,20 @@ class ProxyServer {
                 } else {
                     tcpSocket
                 }
-                
+                upstream = ConnectedUpstream(upstreamSocket, upstreamSocket.getInputStream(), upstreamSocket.getOutputStream())
+
                 if (!proxy.username.isNullOrBlank()) {
                     // Inject header
                     val originalRequest = String(initialBuffer, 0, initialBytesRead)
                     val auth = "${proxy.username}:${proxy.password}"
                     val encoded = android.util.Base64.encodeToString(auth.toByteArray(), android.util.Base64.NO_WRAP)
                     val header = "Proxy-Authorization: Basic $encoded\r\n"
-                    
+
                     // Insert after first line
                     val firstLineEnd = originalRequest.indexOf("\r\n") + 2
                     val modifiedRequest = originalRequest.substring(0, firstLineEnd) + header + originalRequest.substring(firstLineEnd)
                     val modifiedBytes = modifiedRequest.toByteArray()
-                    
+
                     bufferToWrite = modifiedBytes
                     bytesToWrite = modifiedBytes.size
                 } else {
@@ -211,15 +231,15 @@ class ProxyServer {
                     bytesToWrite = initialBytesRead
                 }
             } else {
-                // Direct or SOCKS: Use connectToUpstream (which handles SOCKS handshake)
-                upstreamSocket = connectToUpstream(host, port, proxy)
+                // Direct or SOCKS: connectToUpstream handles handshake and returns correct streams
+                upstream = connectToUpstream(host, port, proxy)
                 bufferToWrite = initialBuffer
                 bytesToWrite = initialBytesRead
             }
 
-            upstreamSocket.getOutputStream().write(bufferToWrite, 0, bytesToWrite)
+            upstream!!.output.write(bufferToWrite, 0, bytesToWrite)
 
-            tunnel(clientSocket, upstreamSocket)
+            tunnel(clientSocket, upstream)
 
         } catch (e: Exception) {
             AppLogger.error("ProxyServer", "HTTP Request failed: $urlStr", e)
@@ -237,22 +257,28 @@ class ProxyServer {
         socket.setPerformancePreferences(0, 0, 2)
     }
 
-    private fun connectToUpstream(targetHost: String, targetPort: Int, proxy: ProxyEntity?): Socket {
+    private fun connectToUpstream(targetHost: String, targetPort: Int, proxy: ProxyEntity?): ConnectedUpstream {
         if (proxy == null) {
-            // IMPORTANT: Use Proxy.NO_PROXY to bypass system proxy settings (avoid recursion)
+            // IMPORTANT: Use Proxy.NO_PROXY to bypass system proxy settings (avoid recursion).
+            // Buffer sizes set BEFORE connect() so TCP window scale is negotiated at SYN time.
             val socket = Socket(Proxy.NO_PROXY)
+            socket.setReceiveBufferSize(SOCK_BUF)
+            socket.setSendBufferSize(SOCK_BUF)
             socket.connect(InetSocketAddress(targetHost, targetPort), 15000)
             applySocketPerf(socket)
-            return socket
+            return ConnectedUpstream(socket, socket.getInputStream(), socket.getOutputStream())
         }
 
-        // IMPORTANT: Use Proxy.NO_PROXY to connect to the upstream proxy server itself
+        // IMPORTANT: Use Proxy.NO_PROXY to connect to the upstream proxy server itself.
+        // Buffer sizes MUST be set before connect() so TCP window scale is negotiated at SYN time.
         val tcpSocket = Socket(Proxy.NO_PROXY)
+        tcpSocket.setReceiveBufferSize(SOCK_BUF)
+        tcpSocket.setSendBufferSize(SOCK_BUF)
         tcpSocket.connect(InetSocketAddress(proxy.host, proxy.port), 15000)
-        tcpSocket.soTimeout = 15000 // 15s timeout for handshake only
+        tcpSocket.soTimeout = 15000 // 15 s timeout for handshake only; cleared after handshake
         applySocketPerf(tcpSocket)
 
-        // For HTTPS-type proxy, wrap the TCP socket in TLS before sending any proxy protocol
+        // For HTTPS-type proxy, wrap the TCP socket in TLS before sending any proxy protocol.
         val socket: Socket = if (proxy.type == ProxyType.HTTPS) {
             val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                 .createSocket(tcpSocket, proxy.host, proxy.port, true) as javax.net.ssl.SSLSocket
@@ -264,7 +290,7 @@ class ProxyServer {
 
         when (proxy.type) {
             ProxyType.HTTP, ProxyType.HTTPS -> {
-                // For HTTPS target (CONNECT method), we need to tell HTTP proxy to CONNECT to target
+                // Tell the HTTP proxy to CONNECT to the target
                 val connectReq = StringBuilder()
                 connectReq.append("CONNECT $targetHost:$targetPort HTTP/1.1\r\n")
                 connectReq.append("Host: $targetHost:$targetPort\r\n")
@@ -274,33 +300,36 @@ class ProxyServer {
                     connectReq.append("Proxy-Authorization: Basic $encoded\r\n")
                 }
                 connectReq.append("\r\n")
-                
+
                 val out = socket.getOutputStream()
                 out.write(connectReq.toString().toByteArray())
                 out.flush()
-                
-                val inp = socket.getInputStream()
-                // Read response (HTTP/1.1 200 ...)
+
+                // Buffered read for response headers — avoids one syscall per byte.
+                // IMPORTANT: we must return this same `inp` from ConnectedUpstream so that
+                // any application bytes the buffer may have pre-read are not silently lost.
+                val inp = socket.getInputStream().buffered(4096)
                 val responseLine = readLine(inp)
-                
+
                 if (!responseLine.contains("200")) {
                     throw IOException("Proxy CONNECT failed. Response: $responseLine")
                 }
-                // Read until empty line (end of headers)
+                // Drain response headers
                 var headerLine: String
-                while (readLine(inp).also { headerLine = it }.isNotEmpty()) {
-                    // AppLogger.log("ProxyServer", "Header: $headerLine")
-                }
+                while (readLine(inp).also { headerLine = it }.isNotEmpty()) { /* skip */ }
 
                 // Handshake done — disable read timeout so idle tunnel connections never time out
                 socket.soTimeout = 0
-                return socket
+                return ConnectedUpstream(socket, inp, out)
             }
             ProxyType.SOCKS5 -> {
-                // Use buffered streams so SOCKS5 handshake byte reads are not individual syscalls
-                val inp = socket.getInputStream().buffered(4096)
                 val out = socket.getOutputStream()
-                
+                // Buffered read for handshake — avoids one syscall per byte AND pre-reads
+                // efficiently.  CRITICAL: we must carry `inp` through to ConnectedUpstream;
+                // discarding it after the handshake would lose any application-layer bytes
+                // that arrived in the same TCP segment as the final SOCKS5 response.
+                val inp = socket.getInputStream().buffered(4096)
+
                 // 1. Auth negotiation
                 if (!proxy.username.isNullOrBlank()) {
                     out.write(byteArrayOf(0x05, 0x01, 0x02)) // Ver 5, 1 method, User/Pass
@@ -308,27 +337,27 @@ class ProxyServer {
                     out.write(byteArrayOf(0x05, 0x01, 0x00)) // Ver 5, 1 method, No Auth
                 }
                 out.flush()
-                
+
                 val ver = inp.read()
                 val method = inp.read()
-                
+
                 if (method == 0x02) { // User/Pass auth required
-                     out.write(0x01) // Ver 1
-                     val userBytes = proxy.username!!.toByteArray()
-                     out.write(userBytes.size)
-                     out.write(userBytes)
-                     val passBytes = proxy.password!!.toByteArray()
-                     out.write(passBytes.size)
-                     out.write(passBytes)
-                     out.flush()
-                     
-                     val authVer = inp.read()
-                     val authStatus = inp.read()
-                     if (authStatus != 0x00) throw IOException("SOCKS5 Auth failed")
+                    out.write(0x01) // Sub-negotiation version
+                    val userBytes = proxy.username!!.toByteArray()
+                    out.write(userBytes.size)
+                    out.write(userBytes)
+                    val passBytes = proxy.password!!.toByteArray()
+                    out.write(passBytes.size)
+                    out.write(passBytes)
+                    out.flush()
+
+                    val authVer = inp.read()
+                    val authStatus = inp.read()
+                    if (authStatus != 0x00) throw IOException("SOCKS5 Auth failed")
                 } else if (method != 0x00) {
                     throw IOException("SOCKS5 unsupported method: $method")
                 }
-                
+
                 // 2. Connect request
                 out.write(0x05) // Ver 5
                 out.write(0x01) // Cmd CONNECT
@@ -337,35 +366,33 @@ class ProxyServer {
                 val domainBytes = targetHost.toByteArray()
                 out.write(domainBytes.size)
                 out.write(domainBytes)
-                // Port (Big Endian)
-                out.write((targetPort shr 8) and 0xFF)
-                out.write(targetPort and 0xFF)
+                out.write((targetPort shr 8) and 0xFF) // Port high byte
+                out.write(targetPort and 0xFF)          // Port low byte
                 out.flush()
-                
+
                 // 3. Read response
                 val respVer = inp.read()
                 val respRep = inp.read()
                 if (respRep != 0x00) throw IOException("SOCKS5 Connect failed: $respRep")
-                
+
                 // Skip rest of response (RSV, ATYP, BND.ADDR, BND.PORT)
                 inp.read() // RSV
                 val atyp = inp.read()
                 when (atyp) {
-                    0x01 -> readNBytes(inp, 4) // IPv4
-                    0x03 -> { // Domain
-                        val len = inp.read()
-                        readNBytes(inp, len)
-                    }
+                    0x01 -> readNBytes(inp, 4)  // IPv4
+                    0x03 -> readNBytes(inp, inp.read()) // Domain (length-prefixed)
                     0x04 -> readNBytes(inp, 16) // IPv6
                 }
                 readNBytes(inp, 2) // Port
 
-                // Handshake done — disable read timeout so idle tunnel connections never time out
+                // Handshake done — disable read timeout so idle tunnel connections never time out.
+                // Return `inp` (not socket.getInputStream()) — its internal buffer may already
+                // hold the first bytes of application data sent by the remote end.
                 socket.soTimeout = 0
-                return socket
+                return ConnectedUpstream(socket, inp, out)
             }
         }
-        return socket
+        return ConnectedUpstream(socket, socket.getInputStream(), socket.getOutputStream())
     }
 
     private fun readLine(inp: InputStream): String {
@@ -413,25 +440,27 @@ class ProxyServer {
      * on each iteration, adding latency jitter. A daemon thread blocks on read() and
      * writes immediately — zero scheduler overhead, maximising throughput per connection.
      */
-    private fun tunnel(client: Socket, server: Socket) {
+    private fun tunnel(client: Socket, upstream: ConnectedUpstream) {
         val closed = AtomicBoolean(false)
         fun closeBoth() {
             if (closed.compareAndSet(false, true)) {
-                try { client.close() } catch (_: Exception) {}
-                try { server.close() } catch (_: Exception) {}
+                try { client.close() }          catch (_: Exception) {}
+                try { upstream.socket.close() } catch (_: Exception) {}
             }
         }
 
         daemonThread("c→s") {
             try {
-                pipe(client.getInputStream(), server.getOutputStream())
+                pipe(client.getInputStream(), upstream.output)
             } finally {
                 closeBoth()
             }
         }
         daemonThread("s→c") {
             try {
-                pipe(server.getInputStream(), client.getOutputStream())
+                // upstream.input may be a BufferedInputStream that already holds pre-read bytes
+                // from the SOCKS5/HTTP handshake — using it here ensures those bytes reach the client.
+                pipe(upstream.input, client.getOutputStream())
             } finally {
                 closeBoth()
             }
