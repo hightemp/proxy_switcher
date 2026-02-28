@@ -6,6 +6,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -46,6 +47,9 @@ fun HomeScreen(
                 actions = {
                     IconButton(onClick = { navController.navigate("logs") }) {
                         Icon(Icons.Default.Info, contentDescription = "Logs")
+                    }
+                    IconButton(onClick = { navController.navigate("system_proxy") }) {
+                        Icon(Icons.Default.NetworkCheck, contentDescription = "System Proxy")
                     }
                     IconButton(onClick = { navController.navigate("proxy_list") }) {
                         Icon(Icons.Default.Settings, contentDescription = "Manage Proxies")
