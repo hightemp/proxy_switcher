@@ -1,10 +1,13 @@
 package com.hightemp.proxy_switcher.ui.viewmodel
 
+import android.content.Context
+import android.content.pm.PackageManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hightemp.proxy_switcher.data.local.ProxyEntity
 import com.hightemp.proxy_switcher.data.repository.ProxyRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -15,8 +18,19 @@ import javax.inject.Inject
 
 @HiltViewModel
 class ProxyViewModel @Inject constructor(
-    private val repository: ProxyRepository
+    private val repository: ProxyRepository,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
+
+    private val _hasSystemProxyPermission = MutableStateFlow(
+        context.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
+    )
+    val hasSystemProxyPermission: StateFlow<Boolean> = _hasSystemProxyPermission.asStateFlow()
+
+    fun refreshPermissionState() {
+        _hasSystemProxyPermission.value =
+            context.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
+    }
 
     private val _isProxyRunning = MutableStateFlow(false)
     val isProxyRunning: StateFlow<Boolean> = _isProxyRunning.asStateFlow()

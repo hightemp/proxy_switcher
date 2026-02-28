@@ -6,14 +6,17 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import com.hightemp.proxy_switcher.MainActivity
 import com.hightemp.proxy_switcher.R
 import com.hightemp.proxy_switcher.data.local.ProxyEntity
 import com.hightemp.proxy_switcher.data.repository.ProxyRepository
 import com.hightemp.proxy_switcher.proxy.ProxyServer
+import com.hightemp.proxy_switcher.utils.AppLogger
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -64,7 +67,8 @@ class ProxyService : Service() {
         scope.launch {
             val proxy = if (proxyId != -1L) repository.getProxyById(proxyId) else null
             proxyServer.start(8080, proxy)
-            
+            applySystemProxy()
+
             val contentText = if (proxy != null) "Running on :8080 via ${proxy.host}" else "Running on :8080 (Direct)"
             val updatedNotification = createNotification(contentText)
             val notificationManager = getSystemService(NotificationManager::class.java)
@@ -73,9 +77,40 @@ class ProxyService : Service() {
     }
 
     private fun stopProxy() {
+        restoreSystemProxy()
         proxyServer.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun applySystemProxy() {
+        if (checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) != PackageManager.PERMISSION_GRANTED) {
+            AppLogger.log("ProxyService", "WRITE_SECURE_SETTINGS not granted — skipping system proxy setup. Run: adb shell pm grant ${packageName} android.permission.WRITE_SECURE_SETTINGS")
+            return
+        }
+        try {
+            val current = Settings.Global.getString(contentResolver, Settings.Global.HTTP_PROXY) ?: ""
+            getSharedPreferences("proxy_prefs", MODE_PRIVATE)
+                .edit()
+                .putString("original_proxy", current)
+                .apply()
+            Settings.Global.putString(contentResolver, Settings.Global.HTTP_PROXY, "127.0.0.1:8080")
+            AppLogger.log("ProxyService", "System proxy set to 127.0.0.1:8080 (was: '${current.ifEmpty { "none" }}')") 
+        } catch (e: Exception) {
+            AppLogger.error("ProxyService", "Failed to set system proxy", e)
+        }
+    }
+
+    private fun restoreSystemProxy() {
+        if (checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) != PackageManager.PERMISSION_GRANTED) return
+        try {
+            val original = getSharedPreferences("proxy_prefs", MODE_PRIVATE)
+                .getString("original_proxy", "") ?: ""
+            Settings.Global.putString(contentResolver, Settings.Global.HTTP_PROXY, original)
+            AppLogger.log("ProxyService", "System proxy restored to: '${original.ifEmpty { "none" }}'")
+        } catch (e: Exception) {
+            AppLogger.error("ProxyService", "Failed to restore system proxy", e)
+        }
     }
 
     private fun createNotification(contentText: String): Notification {
@@ -107,6 +142,7 @@ class ProxyService : Service() {
     
     override fun onDestroy() {
         super.onDestroy()
+        restoreSystemProxy()
         proxyServer.stop()
     }
 }
