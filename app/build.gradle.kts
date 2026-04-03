@@ -14,8 +14,8 @@ android {
         applicationId = "com.hightemp.proxy_switcher"
         minSdk = 24
         targetSdk = 35
-        versionCode = 10003
-        versionName = "1.0.3"
+        versionCode = 10004
+        versionName = "1.0.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
