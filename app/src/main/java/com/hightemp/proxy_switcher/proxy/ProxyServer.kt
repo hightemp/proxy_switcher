@@ -11,22 +11,26 @@ import java.net.*
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.Executors
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLSocketFactory
 
 class ProxyServer {
 
     companion object {
-        // 256 KB tunnel buffer — bandwidth-delay product for 300 Mbps / 40 ms RTT = 1.5 MB;
-        // larger buf means fewer read/write syscalls per second
-        private const val TUNNEL_BUF = 262144
+        // 32 KB tunnel buffer — balances throughput vs memory on mobile devices;
+        // with up to ~200 concurrent tunnel directions this caps at ~6 MB heap
+        private const val TUNNEL_BUF = 32768
         // 16 KB for the initial HTTP request read — enough for any real-world header set
         private const val REQUEST_BUF = 16384
-        // 4 MB socket buffers — required to saturate a 300 Mbps link with 40 ms RTT:
-        //   BDP = 37.5 MB/s × 0.04 s = 1.5 MB → 4 MB gives ~3× headroom
-        private const val SOCK_BUF = 4 * 1024 * 1024
+        // 256 KB socket buffers — reasonable for mobile; kernel doubles this internally
+        private const val SOCK_BUF = 256 * 1024
         // Accept backlog — allow many pending connections before the OS drops them
-        private const val BACKLOG = 256
+        private const val BACKLOG = 128
+        // Max concurrent IO threads — prevents OOM from unbounded thread/buffer creation
+        private const val MAX_IO_THREADS = 128
     }
 
     /**
@@ -50,8 +54,20 @@ class ProxyServer {
     private var upstreamProxy: ProxyEntity? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val ioThreadSeq = AtomicInteger(0)
-    private val ioExecutor: ExecutorService = Executors.newCachedThreadPool { runnable ->
-        Thread(runnable, "proxy-io-${ioThreadSeq.incrementAndGet()}").apply { isDaemon = true }
+    private val ioThreadFactory = java.util.concurrent.ThreadFactory { runnable ->
+        Thread(runnable, "proxy-io-${ioThreadSeq.incrementAndGet()}").apply {
+            isDaemon = true
+            uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { t, e ->
+                AppLogger.error("ProxyServer", "Uncaught in ${t.name}: ${e.javaClass.simpleName}", if (e is Exception) e else RuntimeException(e))
+            }
+        }
+    }
+    private val ioExecutor: ExecutorService = ThreadPoolExecutor(
+        4, MAX_IO_THREADS, 60L, TimeUnit.SECONDS,
+        SynchronousQueue<Runnable>(),
+        ioThreadFactory
+    ) { r, _ ->
+        AppLogger.error("ProxyServer", "IO thread pool full ($MAX_IO_THREADS threads), task rejected")
     }
 
     fun start(port: Int, proxy: ProxyEntity?) {
@@ -486,8 +502,8 @@ class ProxyServer {
         runOnIo(name) {
             try {
                 block()
-            } catch (e: Exception) {
-                AppLogger.error("ProxyServer", "Tunnel thread '$name' failed", e)
+            } catch (e: Throwable) {
+                AppLogger.error("ProxyServer", "Tunnel thread '$name' failed", if (e is Exception) e else RuntimeException(e))
             }
         }
     }
@@ -496,8 +512,8 @@ class ProxyServer {
         ioExecutor.execute {
             try {
                 block()
-            } catch (e: Exception) {
-                AppLogger.error("ProxyServer", "IO task '$name' failed", e)
+            } catch (e: Throwable) {
+                AppLogger.error("ProxyServer", "IO task '$name' failed", if (e is Exception) e else RuntimeException(e))
             }
         }
     }

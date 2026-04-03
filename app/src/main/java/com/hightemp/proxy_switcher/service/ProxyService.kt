@@ -13,6 +13,7 @@ import android.net.ConnectivityManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import com.hightemp.proxy_switcher.MainActivity
@@ -26,6 +27,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -40,6 +42,7 @@ class ProxyService : Service() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     @Volatile private var shouldRun = false
     @Volatile private var startJob: Job? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     companion object {
         const val CHANNEL_ID = "ProxyServiceChannel"
@@ -69,6 +72,7 @@ class ProxyService : Service() {
         return START_STICKY
     }
 
+    @SuppressLint("WakelockTimeout")
     private fun startProxy(proxyId: Long) {
         shouldRun = true
         // Cancel any in-flight start sequence to avoid START/STOP race.
@@ -76,6 +80,13 @@ class ProxyService : Service() {
 
         val notification = createNotification("Starting Proxy...")
         startForeground(1, notification)
+
+        // Acquire WakeLock to keep CPU alive while proxying in background
+        if (wakeLock == null) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "proxy_switcher:service")
+        }
+        wakeLock?.takeIf { !it.isHeld }?.acquire()
 
         startJob = scope.launch {
             val proxy = if (proxyId != -1L) repository.getProxyById(proxyId) else null
@@ -111,8 +122,17 @@ class ProxyService : Service() {
             startJob = null
             restoreSystemProxy()
             proxyServer.stop()
+            releaseWakeLock()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.takeIf { it.isHeld }?.release()
+        } catch (e: Exception) {
+            AppLogger.error("ProxyService", "Failed to release WakeLock", e)
         }
     }
 
@@ -366,9 +386,21 @@ class ProxyService : Service() {
         }
     }
     
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        AppLogger.log("ProxyService", "onTaskRemoved — cleaning up")
+        restoreSystemProxy()
+        proxyServer.stop()
+        releaseWakeLock()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         restoreSystemProxy()
         proxyServer.stop()
+        releaseWakeLock()
+        scope.cancel()
     }
 }
