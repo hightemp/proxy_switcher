@@ -1,6 +1,9 @@
 package com.hightemp.proxy_switcher.ui.screens
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
@@ -18,7 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.hightemp.proxy_switcher.data.local.ProxyEntity
+import androidx.core.content.ContextCompat
 import com.hightemp.proxy_switcher.service.ProxyService
 import com.hightemp.proxy_switcher.ui.viewmodel.ProxyViewModel
 
@@ -38,6 +41,30 @@ fun HomeScreen(
     // Re-check permission every time the screen is visible (e.g. after ADB grant)
     LaunchedEffect(Unit) {
         viewModel.refreshPermissionState()
+        viewModel.refreshRunningState()
+    }
+
+    DisposableEffect(context, viewModel) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(receiverContext: Context?, intent: Intent?) {
+                if (intent?.action == ProxyService.ACTION_STATUS_CHANGED) {
+                    viewModel.setProxyRunning(
+                        intent.getBooleanExtra(ProxyService.EXTRA_IS_RUNNING, false)
+                    )
+                }
+            }
+        }
+        val filter = IntentFilter(ProxyService.ACTION_STATUS_CHANGED)
+        ContextCompat.registerReceiver(
+            context,
+            receiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+
+        onDispose {
+            runCatching { context.unregisterReceiver(receiver) }
+        }
     }
 
     Scaffold(
@@ -172,8 +199,7 @@ fun HomeScreen(
                                 putExtra(ProxyService.EXTRA_PROXY_ID, selectedProxy!!.id)
                             }
                         }
-                        context.startForegroundService(intent)
-                        viewModel.setProxyRunning(true)
+                        ContextCompat.startForegroundService(context, intent)
                     }
                 },
                 modifier = Modifier

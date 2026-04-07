@@ -18,7 +18,6 @@ import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import com.hightemp.proxy_switcher.MainActivity
 import com.hightemp.proxy_switcher.R
-import com.hightemp.proxy_switcher.data.local.ProxyEntity
 import com.hightemp.proxy_switcher.data.repository.ProxyRepository
 import com.hightemp.proxy_switcher.proxy.ProxyServer
 import com.hightemp.proxy_switcher.utils.AppLogger
@@ -48,11 +47,15 @@ class ProxyService : Service() {
         const val CHANNEL_ID = "ProxyServiceChannel"
         const val ACTION_START = "ACTION_START"
         const val ACTION_STOP = "ACTION_STOP"
+        const val ACTION_STATUS_CHANGED = "com.hightemp.proxy_switcher.STATUS_CHANGED"
         const val EXTRA_PROXY_ID = "EXTRA_PROXY_ID"
+        const val EXTRA_IS_RUNNING = "EXTRA_IS_RUNNING"
+        const val EXTRA_STATUS_MESSAGE = "EXTRA_STATUS_MESSAGE"
         private const val LOCAL_PROXY_VALUE = "127.0.0.1:8080"
-        private const val PREFS_NAME = "proxy_prefs"
-        private const val KEY_LAST_PROXY_ID = "last_started_proxy_id"
-        private const val KEY_WAS_RUNNING = "was_running"
+        private const val LOCAL_PROXY_PORT = 8080
+        const val PREFS_NAME = "proxy_prefs"
+        const val KEY_LAST_PROXY_ID = "last_started_proxy_id"
+        const val KEY_WAS_RUNNING = "was_running"
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -96,10 +99,7 @@ class ProxyService : Service() {
         startJob?.cancel()
 
         // Persist running state so START_STICKY restart can recover
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-            .putBoolean(KEY_WAS_RUNNING, true)
-            .putLong(KEY_LAST_PROXY_ID, proxyId)
-            .apply()
+        persistRunningState(running = true, proxyId = proxyId)
 
         val notification = createNotification("Starting Proxy...")
         startForeground(1, notification)
@@ -115,7 +115,16 @@ class ProxyService : Service() {
             val proxy = if (proxyId != -1L) repository.getProxyById(proxyId) else null
 
             if (!shouldRun) return@launch
-            proxyServer.start(8080, proxy)
+            val started = proxyServer.start(LOCAL_PROXY_PORT, proxy)
+            if (!started) {
+                shouldRun = false
+                persistRunningState(running = false)
+                releaseWakeLock()
+                sendStatus(running = false, message = "Proxy failed to start")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return@launch
+            }
 
             if (!shouldRun) {
                 proxyServer.stop()
@@ -129,10 +138,11 @@ class ProxyService : Service() {
                 return@launch
             }
 
-            val contentText = if (proxy != null) "Running on :8080 via ${proxy.host}" else "Running on :8080 (Direct)"
+            val contentText = if (proxy != null) "Running on :$LOCAL_PROXY_PORT via ${proxy.host}" else "Running on :$LOCAL_PROXY_PORT (Direct)"
             val updatedNotification = createNotification(contentText)
             val notificationManager = getSystemService(NotificationManager::class.java)
             notificationManager.notify(1, updatedNotification)
+            sendStatus(running = true, message = contentText)
         }
     }
 
@@ -140,9 +150,7 @@ class ProxyService : Service() {
         scope.launch {
             shouldRun = false
             // Clear running state so START_STICKY doesn't restart
-            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                .putBoolean(KEY_WAS_RUNNING, false)
-                .apply()
+            persistRunningState(running = false)
             startJob?.let { job ->
                 job.cancelAndJoin()
             }
@@ -150,9 +158,28 @@ class ProxyService : Service() {
             restoreSystemProxy()
             proxyServer.stop()
             releaseWakeLock()
+            sendStatus(running = false, message = "Proxy stopped")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
+    }
+
+    private fun persistRunningState(running: Boolean, proxyId: Long? = null) {
+        val editor = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putBoolean(KEY_WAS_RUNNING, running)
+        if (proxyId != null) {
+            editor.putLong(KEY_LAST_PROXY_ID, proxyId)
+        }
+        editor.apply()
+    }
+
+    private fun sendStatus(running: Boolean, message: String? = null) {
+        val intent = Intent(ACTION_STATUS_CHANGED).apply {
+            setPackage(packageName)
+            putExtra(EXTRA_IS_RUNNING, running)
+            putExtra(EXTRA_STATUS_MESSAGE, message)
+        }
+        sendBroadcast(intent)
     }
 
     private fun releaseWakeLock() {
@@ -185,7 +212,7 @@ class ProxyService : Service() {
                 oldGlobalHost = ""
                 oldGlobalPort = ""
             }
-            getSharedPreferences("proxy_prefs", MODE_PRIVATE).edit()
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                 .putString("original_proxy", oldHttpProxy)
                 .putString("original_global_host", oldGlobalHost)
                 .putString("original_global_port", oldGlobalPort)
@@ -215,7 +242,7 @@ class ProxyService : Service() {
     private fun restoreSystemProxy() {
         if (checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) != PackageManager.PERMISSION_GRANTED) return
         try {
-            val prefs = getSharedPreferences("proxy_prefs", MODE_PRIVATE)
+            val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             val original     = prefs.getString("original_proxy", "") ?: ""
             val originalHost = prefs.getString("original_global_host", "") ?: ""
             val originalPort = prefs.getString("original_global_port", "") ?: ""
@@ -275,7 +302,7 @@ class ProxyService : Service() {
             val existingProxy = lp?.httpProxy
             val existingHost = existingProxy?.host ?: ""
             val existingPort = existingProxy?.port?.toString() ?: ""
-            getSharedPreferences("proxy_prefs", MODE_PRIVATE).edit()
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                 .putString("original_wifi_proxy_host", existingHost)
                 .putString("original_wifi_proxy_port", existingPort)
                 .apply()
@@ -293,7 +320,7 @@ class ProxyService : Service() {
     @SuppressLint("MissingPermission")
     private fun restoreWifiNetworkProxy() {
         try {
-            val prefs = getSharedPreferences("proxy_prefs", MODE_PRIVATE)
+            val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             val savedHost = prefs.getString("original_wifi_proxy_host", "") ?: ""
             val savedPort = prefs.getString("original_wifi_proxy_port", "") ?: ""
 
@@ -315,7 +342,7 @@ class ProxyService : Service() {
      * On Android 10+ this returns -1 for non-system apps but does not throw.
      */
     @Suppress("DEPRECATION")
-    @SuppressLint("MissingPermission")
+    @SuppressLint("MissingPermission", "PrivateApi")
     private fun attemptSetWifiConfigProxy(host: String, port: Int) {
         try {
             val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -355,7 +382,7 @@ class ProxyService : Service() {
      * Silently fails on Android 10+ for non-system apps.
      */
     @Suppress("DEPRECATION")
-    @SuppressLint("MissingPermission")
+    @SuppressLint("MissingPermission", "PrivateApi")
     private fun attemptClearWifiConfigProxy() {
         try {
             val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -416,9 +443,12 @@ class ProxyService : Service() {
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
         AppLogger.log("ProxyService", "onTaskRemoved — cleaning up")
+        shouldRun = false
+        persistRunningState(running = false)
         restoreSystemProxy()
         proxyServer.stop()
         releaseWakeLock()
+        sendStatus(running = false, message = "Proxy stopped")
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

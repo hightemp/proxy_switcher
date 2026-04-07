@@ -9,8 +9,9 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.*
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.Executors
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -54,6 +55,7 @@ class ProxyServer {
     )
 
     private var serverSocket: ServerSocket? = null
+    private var acceptJob: Job? = null
     private val isRunning = AtomicBoolean(false)
     private var upstreamProxy: ProxyEntity? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -67,55 +69,86 @@ class ProxyServer {
         }
     }
     private val activeConnections = AtomicInteger(0)
+    private val trackedSockets = ConcurrentHashMap.newKeySet<Socket>()
     private val ioExecutor: ExecutorService = ThreadPoolExecutor(
         4, MAX_IO_THREADS, 60L, TimeUnit.SECONDS,
         SynchronousQueue<Runnable>(),
         ioThreadFactory
-    ) { r, _ ->
-        AppLogger.error("ProxyServer", "IO thread pool full ($MAX_IO_THREADS threads), active connections: ${activeConnections.get()}, task rejected")
+    ) { _, _ ->
+        val message = "IO thread pool full ($MAX_IO_THREADS threads), active connections: ${activeConnections.get()}, task rejected"
+        AppLogger.error("ProxyServer", message)
+        throw RejectedExecutionException(message)
     }
 
-    fun start(port: Int, proxy: ProxyEntity?) {
-        if (isRunning.get()) return
+    suspend fun start(port: Int, proxy: ProxyEntity?): Boolean = withContext(Dispatchers.IO) {
+        if (!isRunning.compareAndSet(false, true)) return@withContext true
         upstreamProxy = proxy
-        isRunning.set(true)
 
-        scope.launch {
-            try {
-                serverSocket = ServerSocket(port, BACKLOG)
-                AppLogger.log("ProxyServer", "Server started on port $port. Upstream: ${proxy?.host}:${proxy?.port} (${proxy?.type})")
-
-                while (isRunning.get()) {
-                    try {
-                        val clientSocket = serverSocket?.accept() ?: break
-                        runOnIo("client") { handleClient(clientSocket) }
-                    } catch (e: Exception) {
-                        if (isRunning.get()) {
-                            AppLogger.error("ProxyServer", "Error accepting connection", e)
-                            // If the server socket itself is broken, attempt to re-bind
-                            if (serverSocket?.isClosed == true || serverSocket?.isBound != true) {
-                                AppLogger.log("ProxyServer", "Server socket lost, re-binding on port $port")
-                                try { serverSocket?.close() } catch (_: Exception) {}
-                                serverSocket = ServerSocket(port, BACKLOG)
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                AppLogger.error("ProxyServer", "Error starting server", e)
-                stop()
-            }
+        try {
+            serverSocket = createLoopbackServerSocket(port)
+            AppLogger.log("ProxyServer", "Server started on 127.0.0.1:$port. Upstream: ${proxy?.host}:${proxy?.port} (${proxy?.type})")
+            acceptJob = scope.launch { acceptLoop(port) }
+            true
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            isRunning.set(false)
+            serverSocket = null
+            AppLogger.error("ProxyServer", "Error starting server on 127.0.0.1:$port", e)
+            false
         }
     }
 
     fun stop() {
         isRunning.set(false)
+        acceptJob?.cancel()
+        acceptJob = null
         try {
             serverSocket?.close()
         } catch (e: Exception) {
             AppLogger.error("ProxyServer", "Error closing server socket", e)
         }
         serverSocket = null
+        trackedSockets.toList().forEach { closeTrackedSocket(it) }
+        AppLogger.log("ProxyServer", "Server stopped")
+    }
+
+    private fun createLoopbackServerSocket(port: Int): ServerSocket {
+        return ServerSocket().apply {
+            reuseAddress = true
+            bind(InetSocketAddress(InetAddress.getLoopbackAddress(), port), BACKLOG)
+        }
+    }
+
+    private suspend fun acceptLoop(port: Int) {
+        while (isRunning.get()) {
+            try {
+                val clientSocket = serverSocket?.accept() ?: break
+                trackSocket(clientSocket)
+                val submitted = runOnIo("client") { handleClient(clientSocket) }
+                if (!submitted) {
+                    closeTrackedSocket(clientSocket)
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) break
+                if (isRunning.get()) {
+                    AppLogger.error("ProxyServer", "Error accepting connection", e)
+                    if (serverSocket?.isClosed == true || serverSocket?.isBound != true) {
+                        AppLogger.log("ProxyServer", "Server socket lost, re-binding on 127.0.0.1:$port")
+                        try { serverSocket?.close() } catch (_: Exception) {}
+                        serverSocket = createLoopbackServerSocket(port)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun trackSocket(socket: Socket) {
+        trackedSockets.add(socket)
+    }
+
+    private fun closeTrackedSocket(socket: Socket) {
+        trackedSockets.remove(socket)
+        try { socket.close() } catch (_: Exception) {}
     }
 
     private fun handleClient(clientSocket: Socket) {
@@ -133,18 +166,18 @@ class ProxyServer {
             val buffer = ByteArray(REQUEST_BUF)
             val bytesRead = input.read(buffer)
             if (bytesRead == -1) {
-                clientSocket.close()
+                closeTrackedSocket(clientSocket)
                 return
             }
 
-            val headerEnd = findHeaderEnd(buffer, bytesRead)
+            val headerEnd = ProxyProtocolUtils.findHeaderEnd(buffer, bytesRead)
             val requestLen = if (headerEnd != -1) headerEnd else bytesRead
             val request = String(buffer, 0, requestLen, Charsets.ISO_8859_1)
             val lines = request.split("\r\n")
             val requestLine = lines[0]
             val parts = requestLine.split(" ")
             if (parts.size < 2) {
-                clientSocket.close()
+                closeTrackedSocket(clientSocket)
                 return
             }
 
@@ -156,12 +189,12 @@ class ProxyServer {
                 val pendingLen = (bytesRead - pendingOffset).coerceAtLeast(0)
                 handleHttpsConnect(clientSocket, url, upstreamProxy, buffer, pendingOffset, pendingLen)
             } else {
-                handleHttpRequest(clientSocket, buffer, bytesRead, url, method, upstreamProxy)
+                handleHttpRequest(clientSocket, buffer, bytesRead, url, upstreamProxy)
             }
 
         } catch (e: Exception) {
             AppLogger.error("ProxyServer", "Error handling client", e)
-            try { clientSocket.close() } catch (ignore: Exception) {}
+            closeTrackedSocket(clientSocket)
         }
     }
 
@@ -180,8 +213,9 @@ class ProxyServer {
         }
         val targetPort = if (colon > 0) url.substring(colon + 1).toIntOrNull() ?: 443 else 443
 
+        var upstream: ConnectedUpstream? = null
         try {
-            val upstream = connectToUpstream(targetHost, targetPort, proxy)
+            upstream = connectToUpstream(targetHost, targetPort, proxy)
 
             // Send 200 Connection Established to client
             clientSocket.getOutputStream().write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
@@ -197,11 +231,12 @@ class ProxyServer {
 
         } catch (e: Exception) {
             AppLogger.error("ProxyServer", "HTTPS Connect failed: $url. Error: ${e.message}", e)
+            upstream?.socket?.let { closeTrackedSocket(it) }
             try {
                 // Send error to client if possible
                 val errorMsg = "HTTP/1.1 502 Bad Gateway\r\n\r\n"
                 clientSocket.getOutputStream().write(errorMsg.toByteArray())
-                clientSocket.close()
+                closeTrackedSocket(clientSocket)
             } catch (ignore: Exception) {}
         }
     }
@@ -211,15 +246,14 @@ class ProxyServer {
         initialBuffer: ByteArray,
         initialBytesRead: Int,
         urlStr: String,
-        method: String,
         proxy: ProxyEntity?
     ) {
+        var upstream: ConnectedUpstream? = null
         try {
             val url = if (urlStr.startsWith("http")) URL(urlStr) else URL("http://$urlStr")
             val host = url.host
             val port = if (url.port != -1) url.port else 80
 
-            var upstream: ConnectedUpstream? = null
             val bufferToWrite: ByteArray
             val bytesToWrite: Int
 
@@ -242,17 +276,12 @@ class ProxyServer {
                 upstream = ConnectedUpstream(upstreamSocket, upstreamSocket.getInputStream(), upstreamSocket.getOutputStream())
 
                 if (!proxy.username.isNullOrBlank()) {
-                    // Inject header
-                    val originalRequest = String(initialBuffer, 0, initialBytesRead)
-                    val auth = "${proxy.username}:${proxy.password}"
-                    val encoded = android.util.Base64.encodeToString(auth.toByteArray(), android.util.Base64.NO_WRAP)
-                    val header = "Proxy-Authorization: Basic $encoded\r\n"
-
-                    // Insert after first line
-                    val firstLineEnd = originalRequest.indexOf("\r\n") + 2
-                    val modifiedRequest = originalRequest.substring(0, firstLineEnd) + header + originalRequest.substring(firstLineEnd)
-                    val modifiedBytes = modifiedRequest.toByteArray()
-
+                    val modifiedBytes = ProxyProtocolUtils.addProxyAuthorizationHeader(
+                        initialBuffer,
+                        initialBytesRead,
+                        proxy.username,
+                        proxy.password
+                    )
                     bufferToWrite = modifiedBytes
                     bytesToWrite = modifiedBytes.size
                 } else {
@@ -272,7 +301,8 @@ class ProxyServer {
 
         } catch (e: Exception) {
             AppLogger.error("ProxyServer", "HTTP Request failed: $urlStr", e)
-            try { clientSocket.close() } catch (ignore: Exception) {}
+            upstream?.socket?.let { closeTrackedSocket(it) }
+            closeTrackedSocket(clientSocket)
         }
     }
 
@@ -324,9 +354,7 @@ class ProxyServer {
                 connectReq.append("CONNECT $targetHost:$targetPort HTTP/1.1\r\n")
                 connectReq.append("Host: $targetHost:$targetPort\r\n")
                 if (!proxy.username.isNullOrBlank()) {
-                    val auth = "${proxy.username}:${proxy.password}"
-                    val encoded = android.util.Base64.encodeToString(auth.toByteArray(), android.util.Base64.NO_WRAP)
-                    connectReq.append("Proxy-Authorization: Basic $encoded\r\n")
+                    connectReq.append(ProxyProtocolUtils.proxyAuthorizationHeader(proxy.username, proxy.password))
                 }
                 connectReq.append("\r\n")
 
@@ -344,8 +372,7 @@ class ProxyServer {
                     throw IOException("Proxy CONNECT failed. Response: $responseLine")
                 }
                 // Drain response headers
-                var headerLine: String
-                while (readLine(inp).also { headerLine = it }.isNotEmpty()) { /* skip */ }
+                while (readLine(inp).isNotEmpty()) { /* skip */ }
 
                 // Handshake done — disable read timeout so idle tunnel connections never time out
                 socket.soTimeout = 0
@@ -367,7 +394,7 @@ class ProxyServer {
                 }
                 out.flush()
 
-                val ver = inp.read()
+                inp.read() // VER
                 val method = inp.read()
 
                 if (method == 0x02) { // User/Pass auth required
@@ -375,12 +402,12 @@ class ProxyServer {
                     val userBytes = proxy.username!!.toByteArray()
                     out.write(userBytes.size)
                     out.write(userBytes)
-                    val passBytes = proxy.password!!.toByteArray()
+                    val passBytes = proxy.password.orEmpty().toByteArray()
                     out.write(passBytes.size)
                     out.write(passBytes)
                     out.flush()
 
-                    val authVer = inp.read()
+                    inp.read() // Auth VER
                     val authStatus = inp.read()
                     if (authStatus != 0x00) throw IOException("SOCKS5 Auth failed")
                 } else if (method != 0x00) {
@@ -400,7 +427,7 @@ class ProxyServer {
                 out.flush()
 
                 // 3. Read response
-                val respVer = inp.read()
+                inp.read() // VER
                 val respRep = inp.read()
                 if (respRep != 0x00) throw IOException("SOCKS5 Connect failed: $respRep")
 
@@ -444,22 +471,6 @@ class ProxyServer {
         }
     }
 
-    private fun findHeaderEnd(buffer: ByteArray, len: Int): Int {
-        if (len < 4) return -1
-        var i = 0
-        while (i <= len - 4) {
-            if (buffer[i] == '\r'.code.toByte() &&
-                buffer[i + 1] == '\n'.code.toByte() &&
-                buffer[i + 2] == '\r'.code.toByte() &&
-                buffer[i + 3] == '\n'.code.toByte()
-            ) {
-                return i + 4
-            }
-            i++
-        }
-        return -1
-    }
-
     /**
      * Bidirectional tunnel between [client] and [server].
      *
@@ -475,13 +486,14 @@ class ProxyServer {
         try { client.soTimeout = TUNNEL_SO_TIMEOUT_MS } catch (_: Exception) {}
         try { upstream.socket.soTimeout = TUNNEL_SO_TIMEOUT_MS } catch (_: Exception) {}
 
-        val connId = activeConnections.incrementAndGet()
+        activeConnections.incrementAndGet()
         val closed = AtomicBoolean(false)
+        trackSocket(upstream.socket)
         fun closeBoth() {
             if (closed.compareAndSet(false, true)) {
                 activeConnections.decrementAndGet()
-                try { client.close() }          catch (_: Exception) {}
-                try { upstream.socket.close() } catch (_: Exception) {}
+                closeTrackedSocket(client)
+                closeTrackedSocket(upstream.socket)
             }
         }
 
@@ -542,13 +554,19 @@ class ProxyServer {
         }
     }
 
-    private fun runOnIo(name: String, block: () -> Unit) {
-        ioExecutor.execute {
-            try {
-                block()
-            } catch (e: Throwable) {
-                AppLogger.error("ProxyServer", "IO task '$name' failed", if (e is Exception) e else RuntimeException(e))
+    private fun runOnIo(name: String, block: () -> Unit): Boolean {
+        return try {
+            ioExecutor.execute {
+                try {
+                    block()
+                } catch (e: Throwable) {
+                    AppLogger.error("ProxyServer", "IO task '$name' failed", if (e is Exception) e else RuntimeException(e))
+                }
             }
+            true
+        } catch (e: RejectedExecutionException) {
+            AppLogger.error("ProxyServer", "IO task '$name' rejected", e)
+            false
         }
     }
 }

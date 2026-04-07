@@ -13,7 +13,7 @@ object AppLogger {
     private val _logs = MutableStateFlow<List<String>>(emptyList())
     val logs: StateFlow<List<String>> = _logs.asStateFlow()
 
-    private val dateFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+    private val dateFormat = SimpleDateFormat("HH:mm:ss", Locale.ROOT)
 
     fun log(tag: String, message: String) {
         Log.d(tag, message)
