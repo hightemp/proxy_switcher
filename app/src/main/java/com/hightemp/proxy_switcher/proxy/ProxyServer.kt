@@ -32,6 +32,10 @@ class ProxyServer {
         private const val BACKLOG = 128
         // Max concurrent IO threads — prevents OOM from unbounded thread/buffer creation
         private const val MAX_IO_THREADS = 256
+        // Each active tunnel needs one client handler plus one reverse pipe task.
+        // Keep a reserve for accept/handshake work so thread-pool saturation cannot
+        // leak tunnel counters or leave sockets half-managed under heavy app traffic.
+        private const val MAX_ACTIVE_TUNNELS = 96
         // Idle timeout for tunnel sockets (ms). Detects half-open connections
         // that would otherwise block a thread forever. 3 minutes — long enough
         // for paused video streams, short enough to reclaim leaked threads.
@@ -220,7 +224,14 @@ class ProxyServer {
         val targetPort = if (colon > 0) url.substring(colon + 1).toIntOrNull() ?: 443 else 443
 
         var upstream: ConnectedUpstream? = null
+        var tunnelSlotAcquired = false
         try {
+            if (!tryAcquireTunnelSlot()) {
+                rejectTunnel(clientSocket, sendHttpError = true)
+                return
+            }
+            tunnelSlotAcquired = true
+
             upstream = connectToUpstream(targetHost, targetPort, proxy)
 
             // Send 200 Connection Established to client
@@ -235,8 +246,10 @@ class ProxyServer {
             }
 
             tunnel(clientSocket, upstream)
+            tunnelSlotAcquired = false
 
         } catch (e: Exception) {
+            if (tunnelSlotAcquired) releaseTunnelSlot()
             ProxyStats.recordFailure()
             AppLogger.error("ProxyServer", "HTTPS Connect failed: $url. Error: ${e.message}", e)
             upstream?.socket?.let { closeTrackedSocket(it) }
@@ -257,7 +270,14 @@ class ProxyServer {
         proxy: ProxyEntity?
     ) {
         var upstream: ConnectedUpstream? = null
+        var tunnelSlotAcquired = false
         try {
+            if (!tryAcquireTunnelSlot()) {
+                rejectTunnel(clientSocket, sendHttpError = true)
+                return
+            }
+            tunnelSlotAcquired = true
+
             val url = if (urlStr.startsWith("http")) URL(urlStr) else URL("http://$urlStr")
             val host = url.host
             val port = if (url.port != -1) url.port else 80
@@ -307,8 +327,10 @@ class ProxyServer {
             ProxyStats.recordUpload(bytesToWrite)
 
             tunnel(clientSocket, upstream)
+            tunnelSlotAcquired = false
 
         } catch (e: Exception) {
+            if (tunnelSlotAcquired) releaseTunnelSlot()
             ProxyStats.recordFailure()
             AppLogger.error("ProxyServer", "HTTP Request failed: $urlStr", e)
             upstream?.socket?.let { closeTrackedSocket(it) }
@@ -484,11 +506,13 @@ class ProxyServer {
     /**
      * Bidirectional tunnel between [client] and [server].
      *
-     * Each direction runs on its own dedicated daemon thread rather than a coroutine.
+     * The client→server direction runs in the current client handler worker, while
+     * server→client runs on one extra worker.
      * Reason: Dispatchers.IO has a shared pool capped at 64 threads. In a tight
      * read→write loop that never suspends, coroutines still go through the scheduler
-     * on each iteration, adding latency jitter. A daemon thread blocks on read() and
-     * writes immediately — zero scheduler overhead, maximising throughput per connection.
+     * on each iteration, adding latency jitter. Blocking worker threads maximise
+     * throughput, but tunnel concurrency is capped so the pool keeps capacity for
+     * accept and handshake work.
      */
     private fun tunnel(client: Socket, upstream: ConnectedUpstream) {
         // Apply idle timeout to both sockets so read() throws SocketTimeoutException
@@ -496,27 +520,19 @@ class ProxyServer {
         try { client.soTimeout = TUNNEL_SO_TIMEOUT_MS } catch (_: Exception) {}
         try { upstream.socket.soTimeout = TUNNEL_SO_TIMEOUT_MS } catch (_: Exception) {}
 
-        activeConnections.incrementAndGet()
         ProxyStats.recordConnectionOpened()
         val closed = AtomicBoolean(false)
         trackSocket(upstream.socket)
         fun closeBoth() {
             if (closed.compareAndSet(false, true)) {
-                activeConnections.decrementAndGet()
+                releaseTunnelSlot()
                 ProxyStats.recordConnectionClosed()
                 closeTrackedSocket(client)
                 closeTrackedSocket(upstream.socket)
             }
         }
 
-        daemonThread("c→s") {
-            try {
-                pipe(client.getInputStream(), upstream.output, ProxyStats::recordUpload)
-            } finally {
-                closeBoth()
-            }
-        }
-        daemonThread("s→c") {
+        val serverToClientStarted = daemonThread("s→c") {
             try {
                 // upstream.input may be a BufferedInputStream that already holds pre-read bytes
                 // from the SOCKS5/HTTP handshake — using it here ensures those bytes reach the client.
@@ -525,6 +541,48 @@ class ProxyServer {
                 closeBoth()
             }
         }
+
+        if (!serverToClientStarted) {
+            ProxyStats.recordFailure()
+            closeBoth()
+            return
+        }
+
+        try {
+            pipe(client.getInputStream(), upstream.output, ProxyStats::recordUpload)
+        } finally {
+            closeBoth()
+        }
+    }
+
+    private fun tryAcquireTunnelSlot(): Boolean {
+        while (true) {
+            val current = activeConnections.get()
+            if (current >= MAX_ACTIVE_TUNNELS) return false
+            if (activeConnections.compareAndSet(current, current + 1)) return true
+        }
+    }
+
+    private fun releaseTunnelSlot() {
+        while (true) {
+            val current = activeConnections.get()
+            if (current <= 0) return
+            if (activeConnections.compareAndSet(current, current - 1)) return
+        }
+    }
+
+    private fun rejectTunnel(client: Socket, sendHttpError: Boolean) {
+        ProxyStats.recordFailure()
+        AppLogger.log("ProxyServer", "Tunnel rejected: active tunnel limit reached ($MAX_ACTIVE_TUNNELS)")
+        if (sendHttpError) {
+            try {
+                client.getOutputStream().write("HTTP/1.1 503 Service Unavailable\r\n\r\n".toByteArray())
+                client.getOutputStream().flush()
+            } catch (_: Exception) {
+                // Client may already be gone.
+            }
+        }
+        closeTrackedSocket(client)
     }
 
     /** Saturates the pipe: reads up to [TUNNEL_BUF] bytes and writes immediately. */
@@ -557,8 +615,8 @@ class ProxyServer {
         }
     }
 
-    private inline fun daemonThread(name: String, crossinline block: () -> Unit) {
-        runOnIo(name) {
+    private inline fun daemonThread(name: String, crossinline block: () -> Unit): Boolean {
+        return runOnIo(name) {
             try {
                 block()
             } catch (e: Throwable) {

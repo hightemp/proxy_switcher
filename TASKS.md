@@ -47,3 +47,9 @@ Fix the review findings from the April 7, 2026 project audit.
   - [x] Track uptime, active tunnels, peak active tunnels, total tunnels, and failures
   - [x] Add a Statistics screen and Home toolbar entry
   - [x] Verify statistics update on device through ADB
+- [x] Fix active tunnel growth under load
+  - [x] Confirm thread-pool saturation from device logcat
+  - [x] Run one pipe direction in the client worker instead of scheduling both directions separately
+  - [x] Cap active tunnels before returning `200 Connection Established`
+  - [x] Close sockets and record failures when the active tunnel limit is reached
+  - [x] Verify short-lived and overloaded CONNECT traffic through ADB
