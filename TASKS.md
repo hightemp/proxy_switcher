@@ -42,3 +42,8 @@ Fix the review findings from the April 7, 2026 project audit.
   - [x] Bind local proxy server to the same IPv4 loopback address used in system proxy settings
   - [x] Verify `127.0.0.1:8080` accepts connections through ADB
   - [x] Verify HTTPS traffic works through Android system proxy
+- [x] Add traffic statistics page
+  - [x] Track uploaded and downloaded bytes in the proxy tunnel
+  - [x] Track uptime, active tunnels, peak active tunnels, total tunnels, and failures
+  - [x] Add a Statistics screen and Home toolbar entry
+  - [x] Verify statistics update on device through ADB

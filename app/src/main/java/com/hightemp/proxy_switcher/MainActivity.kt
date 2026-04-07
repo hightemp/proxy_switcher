@@ -15,6 +15,7 @@ import com.hightemp.proxy_switcher.ui.screens.AddEditProxyScreen
 import com.hightemp.proxy_switcher.ui.screens.HomeScreen
 import com.hightemp.proxy_switcher.ui.screens.LogsScreen
 import com.hightemp.proxy_switcher.ui.screens.ProxyListScreen
+import com.hightemp.proxy_switcher.ui.screens.StatsScreen
 import com.hightemp.proxy_switcher.ui.screens.SystemProxyScreen
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -35,6 +36,9 @@ class MainActivity : ComponentActivity() {
                     }
                     composable("logs") {
                         LogsScreen(navController = navController)
+                    }
+                    composable("stats") {
+                        StatsScreen(navController = navController)
                     }
                     composable("system_proxy") {
                         SystemProxyScreen(navController = navController)

@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.NetworkCheck
@@ -74,6 +75,9 @@ fun HomeScreen(
                 actions = {
                     IconButton(onClick = { navController.navigate("logs") }) {
                         Icon(Icons.Default.Info, contentDescription = "Logs")
+                    }
+                    IconButton(onClick = { navController.navigate("stats") }) {
+                        Icon(Icons.Default.BarChart, contentDescription = "Statistics")
                     }
                     IconButton(onClick = { navController.navigate("system_proxy") }) {
                         Icon(Icons.Default.NetworkCheck, contentDescription = "System Proxy")

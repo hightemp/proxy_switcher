@@ -17,7 +17,7 @@ Android local proxy server app (HTTP/HTTPS/SOCKS5) with Jetpack Compose UI, fore
 ## Project Structure
 ```
 app/src/main/java/com/hightemp/proxy_switcher/
-├── MainActivity.kt                # @AndroidEntryPoint, NavHost (6 routes)
+├── MainActivity.kt                # @AndroidEntryPoint, NavHost (7 routes)
 ├── ProxySwitcherApp.kt            # @HiltAndroidApp application class
 ├── data/
 │   ├── local/
@@ -29,7 +29,8 @@ app/src/main/java/com/hightemp/proxy_switcher/
 ├── di/
 │   └── DatabaseModule.kt          # @Module provides AppDatabase + ProxyDao
 ├── proxy/
-│   └── ProxyServer.kt             # Socket-based proxy core (600+ lines)
+│   ├── ProxyServer.kt             # Socket-based proxy core (600+ lines)
+│   └── ProxyStats.kt              # Runtime traffic/session counters
 ├── service/
 │   └── ProxyService.kt            # Foreground service, system proxy mgmt (500+ lines)
 ├── ui/
@@ -38,6 +39,7 @@ app/src/main/java/com/hightemp/proxy_switcher/
 │   │   ├── ProxyListScreen.kt     # CRUD proxy list
 │   │   ├── AddEditProxyScreen.kt  # Add/edit proxy form
 │   │   ├── LogsScreen.kt          # Real-time log viewer
+│   │   ├── StatsScreen.kt         # Traffic/session statistics
 │   │   └── SystemProxyScreen.kt   # System proxy diagnostics
 │   ├── theme/                     # Material 3 colour/type tokens
 │   └── viewmodel/
@@ -49,7 +51,7 @@ app/src/main/java/com/hightemp/proxy_switcher/
 ## Key Entry Points
 | File | Purpose |
 |------|---------|
-| `app/src/main/java/.../MainActivity.kt` | Single Activity, NavHost with 6 routes |
+| `app/src/main/java/.../MainActivity.kt` | Single Activity, NavHost with 7 routes |
 | `app/src/main/java/.../proxy/ProxyServer.kt` | HTTP/HTTPS/SOCKS5 proxy engine |
 | `app/src/main/java/.../service/ProxyService.kt` | Foreground service lifecycle |
 | `app/src/main/AndroidManifest.xml` | Permissions and component declarations |

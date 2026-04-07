@@ -86,6 +86,7 @@ class ProxyServer {
 
         try {
             serverSocket = createLoopbackServerSocket(port)
+            ProxyStats.resetSession()
             AppLogger.log("ProxyServer", "Server started on 127.0.0.1:$port. Upstream: ${proxy?.host}:${proxy?.port} (${proxy?.type})")
             acceptJob = scope.launch { acceptLoop(port) }
             true
@@ -109,6 +110,7 @@ class ProxyServer {
         }
         serverSocket = null
         trackedSockets.toList().forEach { closeTrackedSocket(it) }
+        ProxyStats.markStopped()
         AppLogger.log("ProxyServer", "Server stopped")
     }
 
@@ -126,6 +128,7 @@ class ProxyServer {
                 trackSocket(clientSocket)
                 val submitted = runOnIo("client") { handleClient(clientSocket) }
                 if (!submitted) {
+                    ProxyStats.recordFailure()
                     closeTrackedSocket(clientSocket)
                 }
             } catch (e: Exception) {
@@ -166,6 +169,7 @@ class ProxyServer {
             val buffer = ByteArray(REQUEST_BUF)
             val bytesRead = input.read(buffer)
             if (bytesRead == -1) {
+                ProxyStats.recordFailure()
                 closeTrackedSocket(clientSocket)
                 return
             }
@@ -177,6 +181,7 @@ class ProxyServer {
             val requestLine = lines[0]
             val parts = requestLine.split(" ")
             if (parts.size < 2) {
+                ProxyStats.recordFailure()
                 closeTrackedSocket(clientSocket)
                 return
             }
@@ -193,6 +198,7 @@ class ProxyServer {
             }
 
         } catch (e: Exception) {
+            ProxyStats.recordFailure()
             AppLogger.error("ProxyServer", "Error handling client", e)
             closeTrackedSocket(clientSocket)
         }
@@ -225,11 +231,13 @@ class ProxyServer {
             // (typically beginning of TLS ClientHello).
             if (pendingLen > 0) {
                 upstream.output.write(pendingBytes, pendingOffset, pendingLen)
+                ProxyStats.recordUpload(pendingLen)
             }
 
             tunnel(clientSocket, upstream)
 
         } catch (e: Exception) {
+            ProxyStats.recordFailure()
             AppLogger.error("ProxyServer", "HTTPS Connect failed: $url. Error: ${e.message}", e)
             upstream?.socket?.let { closeTrackedSocket(it) }
             try {
@@ -296,10 +304,12 @@ class ProxyServer {
             }
 
             upstream!!.output.write(bufferToWrite, 0, bytesToWrite)
+            ProxyStats.recordUpload(bytesToWrite)
 
             tunnel(clientSocket, upstream)
 
         } catch (e: Exception) {
+            ProxyStats.recordFailure()
             AppLogger.error("ProxyServer", "HTTP Request failed: $urlStr", e)
             upstream?.socket?.let { closeTrackedSocket(it) }
             closeTrackedSocket(clientSocket)
@@ -487,11 +497,13 @@ class ProxyServer {
         try { upstream.socket.soTimeout = TUNNEL_SO_TIMEOUT_MS } catch (_: Exception) {}
 
         activeConnections.incrementAndGet()
+        ProxyStats.recordConnectionOpened()
         val closed = AtomicBoolean(false)
         trackSocket(upstream.socket)
         fun closeBoth() {
             if (closed.compareAndSet(false, true)) {
                 activeConnections.decrementAndGet()
+                ProxyStats.recordConnectionClosed()
                 closeTrackedSocket(client)
                 closeTrackedSocket(upstream.socket)
             }
@@ -499,7 +511,7 @@ class ProxyServer {
 
         daemonThread("c→s") {
             try {
-                pipe(client.getInputStream(), upstream.output)
+                pipe(client.getInputStream(), upstream.output, ProxyStats::recordUpload)
             } finally {
                 closeBoth()
             }
@@ -508,7 +520,7 @@ class ProxyServer {
             try {
                 // upstream.input may be a BufferedInputStream that already holds pre-read bytes
                 // from the SOCKS5/HTTP handshake — using it here ensures those bytes reach the client.
-                pipe(upstream.input, client.getOutputStream())
+                pipe(upstream.input, client.getOutputStream(), ProxyStats::recordDownload)
             } finally {
                 closeBoth()
             }
@@ -516,7 +528,7 @@ class ProxyServer {
     }
 
     /** Saturates the pipe: reads up to [TUNNEL_BUF] bytes and writes immediately. */
-    private fun pipe(src: InputStream, dst: OutputStream) {
+    private fun pipe(src: InputStream, dst: OutputStream, onBytesTransferred: (Int) -> Unit) {
         val buf = ByteArray(TUNNEL_BUF)
         var consecutiveTimeouts = 0
         try {
@@ -536,6 +548,7 @@ class ProxyServer {
                 if (n == -1) break
                 consecutiveTimeouts = 0 // reset on successful read
                 dst.write(buf, 0, n)
+                onBytesTransferred(n)
             }
         } catch (_: SocketException) {
             // Normal during tunnel teardown when peer closes one side first.
