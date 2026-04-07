@@ -174,6 +174,8 @@ class ProxyService : Service() {
     }
 
     private fun sendStatus(running: Boolean, message: String? = null) {
+        ProxyRuntimeState.setRunning(running)
+        AppLogger.log("ProxyService", "Runtime status updated: running=$running${message?.let { ", message=$it" } ?: ""}")
         val intent = Intent(ACTION_STATUS_CHANGED).apply {
             setPackage(packageName)
             putExtra(EXTRA_IS_RUNNING, running)

@@ -6,7 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hightemp.proxy_switcher.data.local.ProxyEntity
 import com.hightemp.proxy_switcher.data.repository.ProxyRepository
-import com.hightemp.proxy_switcher.service.ProxyService
+import com.hightemp.proxy_switcher.service.ProxyRuntimeState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,16 +33,19 @@ class ProxyViewModel @Inject constructor(
             context.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
     }
 
-    private val _isProxyRunning = MutableStateFlow(
-        context.getSharedPreferences(ProxyService.PREFS_NAME, Context.MODE_PRIVATE)
-            .getBoolean(ProxyService.KEY_WAS_RUNNING, false)
-    )
+    private val _isProxyRunning = MutableStateFlow(ProxyRuntimeState.isRunning.value)
     val isProxyRunning: StateFlow<Boolean> = _isProxyRunning.asStateFlow()
 
+    init {
+        viewModelScope.launch {
+            ProxyRuntimeState.isRunning.collect { running ->
+                _isProxyRunning.value = running
+            }
+        }
+    }
+
     fun refreshRunningState() {
-        _isProxyRunning.value =
-            context.getSharedPreferences(ProxyService.PREFS_NAME, Context.MODE_PRIVATE)
-                .getBoolean(ProxyService.KEY_WAS_RUNNING, false)
+        _isProxyRunning.value = ProxyRuntimeState.isRunning.value
     }
 
     fun setProxyRunning(running: Boolean) {

@@ -31,3 +31,10 @@ Fix the review findings from the April 7, 2026 project audit.
 - [x] Verify
   - [x] Run unit tests
   - [x] Run Android lint
+
+## Device Testing Follow-up
+
+- [x] Fix inverted Home button state found on device
+  - [x] Stop using the persisted START_STICKY restart flag as the Home screen's live running status
+  - [x] Keep Home button label/color synchronized with the actual foreground service state
+  - [x] Verify the button state on a connected device through ADB
