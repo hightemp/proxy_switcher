@@ -50,6 +50,9 @@ class ProxyService : Service() {
         const val ACTION_STOP = "ACTION_STOP"
         const val EXTRA_PROXY_ID = "EXTRA_PROXY_ID"
         private const val LOCAL_PROXY_VALUE = "127.0.0.1:8080"
+        private const val PREFS_NAME = "proxy_prefs"
+        private const val KEY_LAST_PROXY_ID = "last_started_proxy_id"
+        private const val KEY_WAS_RUNNING = "was_running"
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -68,6 +71,20 @@ class ProxyService : Service() {
             ACTION_STOP -> {
                 stopProxy()
             }
+            else -> {
+                // START_STICKY restart: intent is null or has no action.
+                // Re-start the proxy with the last known config.
+                val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                val wasRunning = prefs.getBoolean(KEY_WAS_RUNNING, false)
+                if (wasRunning) {
+                    val lastProxyId = prefs.getLong(KEY_LAST_PROXY_ID, -1L)
+                    AppLogger.log("ProxyService", "Service re-created by OS (START_STICKY), re-starting proxy with proxyId=$lastProxyId")
+                    startProxy(lastProxyId)
+                } else {
+                    AppLogger.log("ProxyService", "Service re-created by OS but was not running, stopping")
+                    stopSelf()
+                }
+            }
         }
         return START_STICKY
     }
@@ -77,6 +94,12 @@ class ProxyService : Service() {
         shouldRun = true
         // Cancel any in-flight start sequence to avoid START/STOP race.
         startJob?.cancel()
+
+        // Persist running state so START_STICKY restart can recover
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putBoolean(KEY_WAS_RUNNING, true)
+            .putLong(KEY_LAST_PROXY_ID, proxyId)
+            .apply()
 
         val notification = createNotification("Starting Proxy...")
         startForeground(1, notification)
@@ -116,6 +139,10 @@ class ProxyService : Service() {
     private fun stopProxy() {
         scope.launch {
             shouldRun = false
+            // Clear running state so START_STICKY doesn't restart
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putBoolean(KEY_WAS_RUNNING, false)
+                .apply()
             startJob?.let { job ->
                 job.cancelAndJoin()
             }

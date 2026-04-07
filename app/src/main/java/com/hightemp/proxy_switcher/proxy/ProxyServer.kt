@@ -30,7 +30,11 @@ class ProxyServer {
         // Accept backlog — allow many pending connections before the OS drops them
         private const val BACKLOG = 128
         // Max concurrent IO threads — prevents OOM from unbounded thread/buffer creation
-        private const val MAX_IO_THREADS = 128
+        private const val MAX_IO_THREADS = 256
+        // Idle timeout for tunnel sockets (ms). Detects half-open connections
+        // that would otherwise block a thread forever. 3 minutes — long enough
+        // for paused video streams, short enough to reclaim leaked threads.
+        private const val TUNNEL_SO_TIMEOUT_MS = 3 * 60 * 1000
     }
 
     /**
@@ -62,12 +66,13 @@ class ProxyServer {
             }
         }
     }
+    private val activeConnections = AtomicInteger(0)
     private val ioExecutor: ExecutorService = ThreadPoolExecutor(
         4, MAX_IO_THREADS, 60L, TimeUnit.SECONDS,
         SynchronousQueue<Runnable>(),
         ioThreadFactory
     ) { r, _ ->
-        AppLogger.error("ProxyServer", "IO thread pool full ($MAX_IO_THREADS threads), task rejected")
+        AppLogger.error("ProxyServer", "IO thread pool full ($MAX_IO_THREADS threads), active connections: ${activeConnections.get()}, task rejected")
     }
 
     fun start(port: Int, proxy: ProxyEntity?) {
@@ -85,7 +90,15 @@ class ProxyServer {
                         val clientSocket = serverSocket?.accept() ?: break
                         runOnIo("client") { handleClient(clientSocket) }
                     } catch (e: Exception) {
-                        if (isRunning.get()) AppLogger.error("ProxyServer", "Error accepting connection", e)
+                        if (isRunning.get()) {
+                            AppLogger.error("ProxyServer", "Error accepting connection", e)
+                            // If the server socket itself is broken, attempt to re-bind
+                            if (serverSocket?.isClosed == true || serverSocket?.isBound != true) {
+                                AppLogger.log("ProxyServer", "Server socket lost, re-binding on port $port")
+                                try { serverSocket?.close() } catch (_: Exception) {}
+                                serverSocket = ServerSocket(port, BACKLOG)
+                            }
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -457,9 +470,16 @@ class ProxyServer {
      * writes immediately — zero scheduler overhead, maximising throughput per connection.
      */
     private fun tunnel(client: Socket, upstream: ConnectedUpstream) {
+        // Apply idle timeout to both sockets so read() throws SocketTimeoutException
+        // instead of blocking forever on half-open connections.
+        try { client.soTimeout = TUNNEL_SO_TIMEOUT_MS } catch (_: Exception) {}
+        try { upstream.socket.soTimeout = TUNNEL_SO_TIMEOUT_MS } catch (_: Exception) {}
+
+        val connId = activeConnections.incrementAndGet()
         val closed = AtomicBoolean(false)
         fun closeBoth() {
             if (closed.compareAndSet(false, true)) {
+                activeConnections.decrementAndGet()
                 try { client.close() }          catch (_: Exception) {}
                 try { upstream.socket.close() } catch (_: Exception) {}
             }
@@ -486,9 +506,23 @@ class ProxyServer {
     /** Saturates the pipe: reads up to [TUNNEL_BUF] bytes and writes immediately. */
     private fun pipe(src: InputStream, dst: OutputStream) {
         val buf = ByteArray(TUNNEL_BUF)
+        var consecutiveTimeouts = 0
         try {
             var n: Int
-            while (src.read(buf).also { n = it } != -1) {
+            while (true) {
+                n = try {
+                    src.read(buf)
+                } catch (_: SocketTimeoutException) {
+                    // Idle timeout fired. Allow a few consecutive timeouts
+                    // (total ~9 min) for long-paused streams before tearing down.
+                    consecutiveTimeouts++
+                    if (consecutiveTimeouts >= 3) {
+                        break // tear down the tunnel
+                    }
+                    continue
+                }
+                if (n == -1) break
+                consecutiveTimeouts = 0 // reset on successful read
                 dst.write(buf, 0, n)
             }
         } catch (_: SocketException) {
