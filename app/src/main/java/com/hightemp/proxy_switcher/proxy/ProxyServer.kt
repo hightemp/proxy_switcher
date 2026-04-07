@@ -115,7 +115,7 @@ class ProxyServer {
     private fun createLoopbackServerSocket(port: Int): ServerSocket {
         return ServerSocket().apply {
             reuseAddress = true
-            bind(InetSocketAddress(InetAddress.getLoopbackAddress(), port), BACKLOG)
+            bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), BACKLOG)
         }
     }
 

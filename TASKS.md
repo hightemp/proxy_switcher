@@ -38,3 +38,7 @@ Fix the review findings from the April 7, 2026 project audit.
   - [x] Stop using the persisted START_STICKY restart flag as the Home screen's live running status
   - [x] Keep Home button label/color synchronized with the actual foreground service state
   - [x] Verify the button state on a connected device through ADB
+- [x] Fix no-internet state after starting proxy on device
+  - [x] Bind local proxy server to the same IPv4 loopback address used in system proxy settings
+  - [x] Verify `127.0.0.1:8080` accepts connections through ADB
+  - [x] Verify HTTPS traffic works through Android system proxy
