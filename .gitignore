@@ -7,10 +7,27 @@
 /.idea/modules.xml
 /.idea/workspace.xml
 /.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
+.idea/assetWizardSettings.xml
 .DS_Store
 /build
 /captures
 .externalNativeBuild
 .cxx
 local.properties
+
+# AI factory artifacts
+.agents/
+.ai-factory/
+.ai-factory.json
+.codex/
+skills-lock.json
+TASKS.md
+AGENTS.md
+.vscode/
+
+# GitHub-embedded AI skills (.github is kept for CI workflows only)
+.github/skills/
+.github/copilot-instructions.md
+
+# Project notes (kept locally, not in repo)
+project.md

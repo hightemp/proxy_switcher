@@ -4,11 +4,12 @@
   <img src="proxy_switcher_logox768.png" width="100" />
 </p>
 
-![Version](https://img.shields.io/badge/version-1.0.3-blue)
-![Status](https://img.shields.io/badge/status-experimental-orange)
-![Vibe Coded](https://img.shields.io/badge/vibe-coded-blueviolet)
+[![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/hightemp/proxy_switcher)](https://github.com/hightemp/proxy_switcher/releases/latest)
+[![GitHub all releases](https://img.shields.io/github/downloads/hightemp/proxy_switcher/total)](https://github.com/hightemp/proxy_switcher/releases)
+[![GitHub](https://img.shields.io/github/license/hightemp/proxy_switcher)](LICENSE)
+[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/hightemp/proxy_switcher/release.yml?branch=main&label=ci)](https://github.com/hightemp/proxy_switcher/actions/workflows/release.yml)
 
-Android application that runs a local HTTP proxy server on your device and routes all traffic through an upstream proxy (HTTP, HTTPS, or SOCKS5). Automatically manages the system-wide proxy setting so every application on the device uses it — no root required.
+Android application that runs a local HTTP proxy server on your device and routes all traffic through an upstream proxy (HTTP, HTTPS, or SOCKS5). Automatically manages the system-wide proxy setting so every application on the device uses it — **no root required**.
 
 ## Features
 
@@ -33,17 +34,20 @@ Android application that runs a local HTTP proxy server on your device and route
 | Database | Room |
 | Networking | Custom socket-based proxy core |
 
-## Build & Install
+## Download
 
-```bash
-# Build debug APK
-./gradlew assembleDebug
+Grab the latest APK from **[GitHub Releases](https://github.com/hightemp/proxy_switcher/releases/latest)**.
 
-# Build and install on connected device
-./gradlew installDebug
-# or
-make install
-```
+Requires Android 7.0+ (API 24).
+
+## Usage
+
+1. Install the APK on your Android device
+2. Open Proxy Switcher → tap the gear icon → add an upstream proxy (host, port, type, auth)
+3. Select the proxy in the dropdown on the home screen
+4. Tap **START PROXY**
+
+> ⚠️ **Requires `WRITE_SECURE_SETTINGS`** for automatic system proxy management. See [ADB permission grant](#adb-permission-grant) below. Without it you can still set the proxy manually in WiFi settings.
 
 ### One-time ADB permission grant
 
@@ -57,16 +61,20 @@ adb shell pm grant com.hightemp.proxy_switcher android.permission.WRITE_SECURE_S
 
 > The permission survives app updates but is lost on full uninstall. Run the command again after reinstalling from scratch.
 
-## Usage
-
-1. Open the app → tap the gear icon → add an upstream proxy (host, port, type, auth)
-2. Select the proxy in the dropdown on the home screen
-3. Tap **START PROXY**
-
-**With `WRITE_SECURE_SETTINGS` granted** — the app automatically sets the system proxy and restores it on STOP. All device traffic (Chrome, system apps, etc.) is routed through the upstream.
-
 **Without the permission** — set the proxy manually once:  
 WiFi Settings → long-press active network → Modify → Advanced → Proxy: Manual → `127.0.0.1:8080` → Save
+
+## Build & Install
+
+```bash
+# Build debug APK
+./gradlew assembleDebug
+
+# Build and install on connected device
+./gradlew installDebug
+# or
+make install
+```
 
 ## Makefile Targets
 
@@ -159,11 +167,9 @@ app/src/main/java/com/hightemp/proxy_switcher/
 Key `ProxyService` behaviours:
 - Saves all proxy keys to `SharedPreferences` on START, restores on STOP
 - Skips stale loopback values (`127.0.0.1:8080`) when saving originals — prevents a previous crash from polluting the restore target
-- Resets `http_proxy` to `:0` instead of deleting — reliable on Samsung/Chrome (SKILL: android-proxy-recovery)
+- Resets `http_proxy` to `:0` instead of deleting — reliable on Samsung/Chrome
 - Per-network WiFi proxy modified only on Android < 10 (API 29) — restricted for non-system apps on newer versions
 
 ## Screenshots
 
 <img src="screenshots/photo_2025-11-22_10-17-00.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-08.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-13.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-18.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-22.jpg" width="19%" />
-
-![](https://asdertasd.site/counter/proxy_switcher)
