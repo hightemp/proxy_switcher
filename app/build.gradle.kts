@@ -1,4 +1,5 @@
 import java.util.Properties
+import java.io.File
 import java.io.FileInputStream
 
 plugins {
@@ -51,7 +52,14 @@ android {
     signingConfigs {
         if (hasReleaseSigning) {
             create("release") {
-                storeFile = file(signingStoreFile!!)
+                // Resolve relative paths against the root project, not the app/ module,
+                // so `storeFile=release.keystore` in keystore.properties points to the repo root.
+                val rawStore = signingStoreFile!!
+                storeFile = if (File(rawStore).isAbsolute) {
+                    File(rawStore)
+                } else {
+                    rootProject.file(rawStore)
+                }
                 storePassword = signingStorePassword
                 keyAlias = signingKeyAlias
                 keyPassword = signingKeyPassword
