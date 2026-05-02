@@ -9,7 +9,7 @@ VERSION_CODE := $(shell echo "$$(( $(MAJOR) * 10000 + $(MINOR) * 100 + $(PATCH) 
 GRADLE_FILE  := app/build.gradle.kts
 TAG          := v$(VERSION)
 
-.PHONY: help release tag update-version build-local install adb-grant adb-clear-proxy adb-check-proxy
+.PHONY: help release tag update-version build-local build-release install install-release keystore adb-grant adb-clear-proxy adb-check-proxy
 
 # ── default ──────────────────────────────────────────────────────────────────
 help:
@@ -18,7 +18,10 @@ help:
 	@echo "  make tag              Create and push git tag only (no gradle update)"
 	@echo "  make update-version   Update versionCode/versionName in build.gradle.kts only"
 	@echo "  make build-local      Build debug APK locally"
+	@echo "  make build-release    Build SIGNED release APK locally (requires keystore.properties)"
 	@echo "  make install          Build and install debug APK on connected device"
+	@echo "  make install-release  Build and install SIGNED release APK on connected device"
+	@echo "  make keystore         Generate a new release.keystore (interactive)"
 	@echo "  make adb-grant        Grant WRITE_SECURE_SETTINGS to the app"
 	@echo "  make adb-clear-proxy  Emergency: delete all system proxy settings on device"
 	@echo "  make adb-check-proxy  Show all proxy-related settings on device (global + wifi)"
@@ -60,8 +63,34 @@ tag:
 build-local:
 	./gradlew assembleDebug
 
+build-release:
+	@if [ ! -f keystore.properties ]; then \
+		echo "✗ keystore.properties not found. Run 'make keystore' first or copy keystore.properties.example"; \
+		exit 1; \
+	fi
+	./gradlew clean assembleRelease
+	@echo "✓ Signed APK: app/build/outputs/apk/release/app-release.apk"
+
 install:
 	./gradlew installDebug
+
+install-release:
+	./gradlew installRelease
+
+# ── keystore generation ──────────────────────────────────────────────────────
+keystore:
+	@if [ -f release.keystore ]; then \
+		echo "✗ release.keystore already exists — refusing to overwrite"; \
+		exit 1; \
+	fi
+	keytool -genkey -v \
+		-keystore release.keystore \
+		-alias proxy_switcher \
+		-keyalg RSA -keysize 2048 -validity 10000
+	@if [ ! -f keystore.properties ]; then \
+		cp keystore.properties.example keystore.properties; \
+		echo "✓ keystore.properties created from example — edit it with your real passwords"; \
+	fi
 
 # ── ADB helpers ───────────────────────────────────────────────────────────────
 adb-grant:

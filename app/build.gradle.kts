@@ -1,3 +1,6 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -5,6 +8,31 @@ plugins {
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt.android)
 }
+
+// ── Release signing ──────────────────────────────────────────────────────────
+// Credentials are loaded from (in order of precedence):
+//   1. Environment variables: KEYSTORE_FILE, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
+//      (used by GitHub Actions / CI)
+//   2. keystore.properties file in the project root (local builds)
+// If neither is configured the release build falls back to the unsigned APK.
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        load(FileInputStream(keystorePropertiesFile))
+    }
+}
+
+fun signingValue(propKey: String, envKey: String): String? =
+    System.getenv(envKey)?.takeIf { it.isNotBlank() }
+        ?: keystoreProperties.getProperty(propKey)?.takeIf { it.isNotBlank() }
+
+val signingStoreFile = signingValue("storeFile", "KEYSTORE_FILE")
+val signingStorePassword = signingValue("storePassword", "KEYSTORE_PASSWORD")
+val signingKeyAlias = signingValue("keyAlias", "KEY_ALIAS")
+val signingKeyPassword = signingValue("keyPassword", "KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    signingStoreFile, signingStorePassword, signingKeyAlias, signingKeyPassword
+).all { !it.isNullOrBlank() }
 
 android {
     namespace = "com.hightemp.proxy_switcher"
@@ -20,6 +48,21 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(signingStoreFile!!)
+                storePassword = signingStorePassword
+                keyAlias = signingKeyAlias
+                keyPassword = signingKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -27,6 +70,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {

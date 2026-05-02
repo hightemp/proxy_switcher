@@ -25,18 +25,45 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Build Release APK
+      - name: Decode keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::KEYSTORE_BASE64 secret is not set. Configure release signing secrets first."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+
+      - name: Build Signed Release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew clean app:assembleRelease
+
+      - name: Verify APK signature
+        run: |
+          APK=app/build/outputs/apk/release/app-release.apk
+          if [ ! -f "$APK" ]; then
+            echo "::error::Signed APK not found at $APK (build produced unsigned output?)"
+            ls -la app/build/outputs/apk/release/
+            exit 1
+          fi
+          BUILD_TOOLS=$(ls "$ANDROID_HOME"/build-tools/ | sort -V | tail -n1)
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose "$APK"
 
       - name: Rename APK for release
         run: |
-          mv app/build/outputs/apk/release/app-release-unsigned.apk app/build/outputs/apk/release/proxy_switcher-release.apk
+          mv app/build/outputs/apk/release/app-release.apk \
+             app/build/outputs/apk/release/proxy_switcher-${{ github.ref_name }}.apk
 
       - name: Upload built APK as artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-apk
-          path: app/build/outputs/apk/release/proxy_switcher-release.apk
+          path: app/build/outputs/apk/release/proxy_switcher-${{ github.ref_name }}.apk
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -47,4 +74,4 @@ jobs:
             Release for tag ${{ github.ref_name }}
             Build commit: ${{ github.sha }}
           files: |
-            app/build/outputs/apk/release/proxy_switcher-release.apk
+            app/build/outputs/apk/release/proxy_switcher-${{ github.ref_name }}.apk

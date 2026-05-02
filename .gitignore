@@ -15,6 +15,11 @@
 .cxx
 local.properties
 
+# Release signing — never commit secrets
+keystore.properties
+*.keystore
+*.jks
+
 .agents/
 .ai-factory/
 .ai-factory.json
