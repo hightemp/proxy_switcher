@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.hightemp.proxy_switcher.data.local.ProxyEntity
 import com.hightemp.proxy_switcher.data.repository.ProxyRepository
 import com.hightemp.proxy_switcher.service.ProxyRuntimeState
+import com.hightemp.proxy_switcher.utils.ProxyTransfer
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -86,5 +87,27 @@ class ProxyViewModel @Inject constructor(
     
     suspend fun getProxyById(id: Long): ProxyEntity? {
         return repository.getProxyById(id)
+    }
+
+    /** Serializes the current proxy list to a JSON text payload. */
+    fun exportProxiesToText(): String = ProxyTransfer.export(proxyList.value)
+
+    /**
+     * Parses the given text and inserts the resulting proxies as new entries.
+     * Returns the number of imported proxies, or null on parse failure (with [onError]).
+     */
+    fun importProxiesFromText(
+        text: String,
+        onResult: (importedCount: Int, errorMessage: String?) -> Unit
+    ) {
+        val result = ProxyTransfer.import(text)
+        if (!result.isSuccess) {
+            onResult(0, result.errorMessage)
+            return
+        }
+        viewModelScope.launch {
+            result.proxies.forEach { repository.insertProxy(it) }
+            onResult(result.proxies.size, null)
+        }
     }
 }
