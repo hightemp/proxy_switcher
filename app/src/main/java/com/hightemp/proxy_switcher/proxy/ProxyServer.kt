@@ -61,7 +61,7 @@ class ProxyServer {
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
     private val isRunning = AtomicBoolean(false)
-    private var upstreamProxy: ProxyEntity? = null
+    @Volatile private var upstreamProxy: ProxyEntity? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val ioThreadSeq = AtomicInteger(0)
     private val ioThreadFactory = java.util.concurrent.ThreadFactory { runnable ->
@@ -116,6 +116,23 @@ class ProxyServer {
         trackedSockets.toList().forEach { closeTrackedSocket(it) }
         ProxyStats.markStopped()
         AppLogger.log("ProxyServer", "Server stopped")
+    }
+
+    /**
+     * Hot-swap the upstream proxy without restarting the server socket.
+     *
+     * New client connections immediately use [proxy]. Existing tunnels are torn down so
+     * the client (browser) reconnects through the new upstream. In-flight requests on the
+     * old upstream are dropped — acceptable since the user explicitly switched proxies.
+     */
+    fun switchUpstream(proxy: ProxyEntity?) {
+        if (!isRunning.get()) return
+        upstreamProxy = proxy
+        AppLogger.log(
+            "ProxyServer",
+            "Upstream switched to ${proxy?.host}:${proxy?.port} (${proxy?.type ?: "Direct"}). Closing ${trackedSockets.size} active socket(s)."
+        )
+        trackedSockets.toList().forEach { closeTrackedSocket(it) }
     }
 
     private fun createLoopbackServerSocket(port: Int): ServerSocket {

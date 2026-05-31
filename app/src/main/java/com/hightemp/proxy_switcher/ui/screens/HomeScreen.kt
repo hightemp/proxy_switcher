@@ -131,6 +131,12 @@ fun HomeScreen(
                         onClick = {
                             viewModel.setSelectedProxy(null)
                             expanded = false
+                            if (isRunning) {
+                                val intent = Intent(context, ProxyService::class.java).apply {
+                                    action = ProxyService.ACTION_SWITCH_PROXY
+                                }
+                                context.startService(intent)
+                            }
                         }
                     )
                     proxyList.forEach { proxy ->
@@ -139,6 +145,13 @@ fun HomeScreen(
                             onClick = {
                                 viewModel.setSelectedProxy(proxy)
                                 expanded = false
+                                if (isRunning) {
+                                    val intent = Intent(context, ProxyService::class.java).apply {
+                                        action = ProxyService.ACTION_SWITCH_PROXY
+                                        putExtra(ProxyService.EXTRA_PROXY_ID, proxy.id)
+                                    }
+                                    context.startService(intent)
+                                }
                             }
                         )
                     }

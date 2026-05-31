@@ -47,6 +47,7 @@ class ProxyService : Service() {
         const val CHANNEL_ID = "ProxyServiceChannel"
         const val ACTION_START = "ACTION_START"
         const val ACTION_STOP = "ACTION_STOP"
+        const val ACTION_SWITCH_PROXY = "ACTION_SWITCH_PROXY"
         const val ACTION_STATUS_CHANGED = "com.hightemp.proxy_switcher.STATUS_CHANGED"
         const val EXTRA_PROXY_ID = "EXTRA_PROXY_ID"
         const val EXTRA_IS_RUNNING = "EXTRA_IS_RUNNING"
@@ -70,6 +71,10 @@ class ProxyService : Service() {
             ACTION_START -> {
                 val proxyId = intent.getLongExtra(EXTRA_PROXY_ID, -1L)
                 startProxy(proxyId)
+            }
+            ACTION_SWITCH_PROXY -> {
+                val proxyId = intent.getLongExtra(EXTRA_PROXY_ID, -1L)
+                switchProxy(proxyId)
             }
             ACTION_STOP -> {
                 stopProxy()
@@ -138,6 +143,26 @@ class ProxyService : Service() {
                 return@launch
             }
 
+            val contentText = if (proxy != null) "Running on :$LOCAL_PROXY_PORT via ${proxy.host}" else "Running on :$LOCAL_PROXY_PORT (Direct)"
+            val updatedNotification = createNotification(contentText)
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.notify(1, updatedNotification)
+            sendStatus(running = true, message = contentText)
+        }
+    }
+
+    private fun switchProxy(proxyId: Long) {
+        // Only meaningful while running; a stopped service has no live ProxyServer to swap.
+        if (!shouldRun) {
+            AppLogger.log("ProxyService", "Switch ignored: proxy is not running")
+            return
+        }
+        // Persist new selection so a START_STICKY restart recovers the latest upstream.
+        persistRunningState(running = true, proxyId = proxyId)
+        scope.launch {
+            val proxy = if (proxyId != -1L) repository.getProxyById(proxyId) else null
+            if (!shouldRun) return@launch
+            proxyServer.switchUpstream(proxy)
             val contentText = if (proxy != null) "Running on :$LOCAL_PROXY_PORT via ${proxy.host}" else "Running on :$LOCAL_PROXY_PORT (Direct)"
             val updatedNotification = createNotification(contentText)
             val notificationManager = getSystemService(NotificationManager::class.java)
