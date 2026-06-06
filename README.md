@@ -8,6 +8,7 @@
 [![GitHub all releases](https://img.shields.io/github/downloads/hightemp/proxy_switcher/total)](https://github.com/hightemp/proxy_switcher/releases)
 [![GitHub](https://img.shields.io/github/license/hightemp/proxy_switcher)](LICENSE)
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/hightemp/proxy_switcher/release.yml?branch=main&label=ci)](https://github.com/hightemp/proxy_switcher/actions/workflows/release.yml)
+![](https://asdertasd.site/counter/proxy_switcher)
 
 Android application that runs a local HTTP proxy server on your device and routes all traffic through an upstream proxy (HTTP, HTTPS, or SOCKS5). Automatically manages the system-wide proxy setting so every application on the device uses it — **no root required**.
 
@@ -174,4 +175,3 @@ Key `ProxyService` behaviours:
 
 <img src="screenshots/photo_2025-11-22_10-17-00.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-08.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-13.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-18.jpg" width="19%" /> <img src="screenshots/photo_2025-11-22_10-17-22.jpg" width="19%" />
 
-![](https://asdertasd.site/counter/proxy_switcher)
