@@ -12,6 +12,10 @@
 
 Android application that runs a local HTTP proxy server on your device and routes all traffic through an upstream proxy (HTTP, HTTPS, or SOCKS5). Automatically manages the system-wide proxy setting so every application on the device uses it — **no root required**.
 
+## Related Project
+
+[Proxy Switcher VPN](https://github.com/hightemp/proxy_switcher_vpn) is a separate Android app that routes device TCP traffic through an HTTP, HTTPS, or SOCKS5 proxy using a local VPN powered by Android's `VpnService` and an embedded sing-box core. It works without changing Android's system proxy settings, supports IPv4, and offers an explicit Direct mode for connecting without an upstream proxy.
+
 ## Features
 
 - **Local Proxy Server** — starts an HTTP proxy on port `8080`
