@@ -1,14 +1,16 @@
-# Proxy Switcher
-
 <p align="center">
-  <img src="proxy_switcher_logox768.png" width="100" />
+  <img src="proxy_switcher_logox768.png" width="120" alt="Proxy Switcher" />
 </p>
 
-[![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/hightemp/proxy_switcher)](https://github.com/hightemp/proxy_switcher/releases/latest)
-[![GitHub all releases](https://img.shields.io/github/downloads/hightemp/proxy_switcher/total)](https://github.com/hightemp/proxy_switcher/releases)
-[![GitHub](https://img.shields.io/github/license/hightemp/proxy_switcher)](LICENSE)
-[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/hightemp/proxy_switcher/release.yml?branch=main&label=ci)](https://github.com/hightemp/proxy_switcher/actions/workflows/release.yml)
-![](https://asdertasd.site/counter/proxy_switcher)
+<h1 align="center">Proxy Switcher</h1>
+
+<p align="center">
+  <a href="https://github.com/hightemp/proxy_switcher/releases/latest"><img src="https://img.shields.io/github/v/release/hightemp/proxy_switcher" alt="GitHub release (latest SemVer)" /></a>
+  <a href="https://github.com/hightemp/proxy_switcher/releases"><img src="https://img.shields.io/github/downloads/hightemp/proxy_switcher/total" alt="GitHub all releases" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/hightemp/proxy_switcher" alt="License" /></a>
+  <a href="https://github.com/hightemp/proxy_switcher/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/hightemp/proxy_switcher/release.yml?branch=main&amp;label=ci" alt="GitHub Workflow Status" /></a>
+  <img src="https://asdertasd.site/counter/proxy_switcher" alt="Statistics" />
+</p>
 
 Android application that runs a local HTTP proxy server on your device and routes all traffic through an upstream proxy (HTTP, HTTPS, or SOCKS5). Automatically manages the system-wide proxy setting so every application on the device uses it — **no root required**.
 
